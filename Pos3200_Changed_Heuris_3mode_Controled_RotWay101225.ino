@@ -64,6 +64,13 @@ const unsigned long FLIP_LIN_MS   = 200;
 const float FLIP_EXP_STRENGTH     = 0.25f;
 const float FLIP_LIN_STRENGTH     = 0.6f;
 
+
+// --- Paramètres arrêt d'urgence ---
+const long EMERGENCY_STEP_THRESHOLD = 3200;    // seuil déclenchement (steps)
+const float EMERGENCY_V_TARGET      = 320.0f;  // vitesse cible (steps/s)
+const float EMERGENCY_A_SCALE       = 1.0f;    // EM_A = EMERGENCY_V_TARGET * EMERGENCY_A_SCALE
+const unsigned long EMERGENCY_RAMP_MS = 3000;  // durée rampe (ms)
+
 // ✨ Paramètres heuristiques DIST→V/A (changés via presets)
 float HEUR_D_MIN;   // distance min
 float HEUR_D_MAX;   // distance max
@@ -154,6 +161,13 @@ unsigned long flipStartMs[NBMOTEURS];
 long  targetPos[NBMOTEURS];        // repère interne
 long  lastStreamTarget[NBMOTEURS];
 float lastStreamV[NBMOTEURS];
+
+// --- Variables arrêt d'urgence ---
+bool emergencyActive = false;
+unsigned long emergencyStartMs = 0;
+float emergencyVStart[NBMOTEURS];
+float emergencyAStart[NBMOTEURS];
+long  lastLoopPosition[NBMOTEURS];
 
 // ===================== DONNÉES REÇUES DE MAX =====================
 long ABC[NBDATA] = {0};
@@ -504,6 +518,13 @@ void setup() {
     targetPos[i]   = 0;
     lastStreamTarget[i] = 0;
     lastStreamV[i]      = 0;
+
+    // initialisation positions pour détection
+    lastLoopPosition[i] = stepper[i].currentPosition();
+
+    // init emergency arrays
+    emergencyVStart[i] = vUsed[i];
+    emergencyAStart[i] = aUsed[i];
   }
 
   lastLoopMs = millis();
@@ -513,6 +534,18 @@ void setup() {
   lastDistMs = now;
 
   lastInValid = false;
+}
+
+
+// démarrer l'arrêt d'urgence (appelé une fois lors du déclenchement)
+void startEmergencyStop(unsigned long nowMs) {
+  if (emergencyActive) return;
+  emergencyActive = true;
+  emergencyStartMs = nowMs;
+  for (uint8_t i = 0; i < NBMOTEURS; ++i) {
+    emergencyVStart[i] = vUsed[i];
+    emergencyAStart[i] = aUsed[i];
+  }
 }
 
 // ===================== LOOP =====================
@@ -531,6 +564,17 @@ void loop() {
   if (dtMs > 50) dtMs = 50;
   lastLoopMs = nowMs;
 
+    // --- Détection arrêt d'urgence : si déplacement suspect entre deux boucles ---
+  for (uint8_t i = 0; i < NBMOTEURS; ++i) {
+    long curPos = stepper[i].currentPosition();
+    long d = curPos - lastLoopPosition[i];
+    if (d < 0) d = -d;
+    if (!emergencyActive && d > EMERGENCY_STEP_THRESHOLD) {
+      startEmergencyStop(nowMs);
+      break; // suffit qu'un seul déclencheur
+    }
+  }
+
   // 3) Mise à jour profils
   for (uint8_t i = 0; i < NBMOTEURS; i++) {
     long curPos  = stepper[i].currentPosition();
@@ -541,6 +585,37 @@ void loop() {
     int dirNow = 0;
     if (dist > 0)      dirNow = +1;
     else if (dist < 0) dirNow = -1;
+
+     // si on est en arrêt d'urgence : on écrase les cibles v/a pour les ramper vers la cible d'urgence
+    if (emergencyActive) {
+      unsigned long elapsed = nowMs - emergencyStartMs;
+      float t = (elapsed >= EMERGENCY_RAMP_MS) ? 1.0f : (float)elapsed / (float)EMERGENCY_RAMP_MS;
+
+      // vitesse cible et accel cible d'urgence
+      float emergencyA_target = EMERGENCY_V_TARGET * EMERGENCY_A_SCALE;
+      if (emergencyA_target < 50.0f) emergencyA_target = 50.0f;
+      if (emergencyA_target > ACC_HARD) emergencyA_target = ACC_HARD;
+
+      // interpolation linéaire depuis les valeurs de départ
+      vUsed[i] = emergencyVStart[i] + (EMERGENCY_V_TARGET - emergencyVStart[i]) * t;
+      aUsed[i] = emergencyAStart[i] + (emergencyA_target - emergencyAStart[i]) * t;
+
+      // clamps
+      if (vUsed[i] > VMAX_HARD) vUsed[i] = VMAX_HARD;
+      if (vUsed[i] < EMERGENCY_V_TARGET) vUsed[i] = EMERGENCY_V_TARGET;
+      if (aUsed[i] > ACC_HARD) aUsed[i] = ACC_HARD;
+      if (aUsed[i] < 10.0f) aUsed[i] = 10.0f;
+
+      // forcer la consigne de mouvement (on garde la target position)
+      stepper[i].setMaxSpeed(vUsed[i]);
+      stepper[i].setAcceleration(aUsed[i]);
+      stepper[i].moveTo(tgtPos);
+
+      // continuer les autres moteurs (on ne fait pas 'continue' ici pour garder logique uniforme)
+      continue;
+    }
+
+    // comportement normal (préexistant)
 
     float vTarget = computeSpeedFromDistance(distAbs);
     float aTarget = computeAccelFromDistance(distAbs);
@@ -611,5 +686,10 @@ void loop() {
   if (nowMs2 - lastDistMs >= PRINT_INTERVAL_MS) {
     lastDistMs = nowMs2;
     maybeSendDISTSerial();
+  }
+
+    // mise à jour positions de référence pour la prochaine détection
+  for (uint8_t i = 0; i < NBMOTEURS; ++i) {
+    lastLoopPosition[i] = stepper[i].currentPosition();
   }
 }
