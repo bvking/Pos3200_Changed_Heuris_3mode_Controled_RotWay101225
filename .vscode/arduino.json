@@ -1,0 +1,5 @@
+{
+    "sketch": "Pos3200_Changed_Heuris_3mode_Controled_RotWay101225.ino",
+    "configuration": "usb=serial,speed=600,opt=o2std,keys=en-us",
+    "board": "teensy:avr:teensy41"
+}
