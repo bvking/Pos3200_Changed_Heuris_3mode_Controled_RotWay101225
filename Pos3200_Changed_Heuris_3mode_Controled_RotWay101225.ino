@@ -79,6 +79,7 @@ float HEUR_A_MAX;   // accel max
 const uint8_t PROFILE_SOFT_IDX    = 0;
 const uint8_t PROFILE_MEDIUM_IDX  = 1;
 const uint8_t PROFILE_NERVOUS_IDX = 2;
+const uint8_t PROFILE_DYNAMIC_IDX = 3;
 
 struct MotionProfileParams {
   float dMin;
@@ -94,6 +95,7 @@ const MotionProfileParams PROFILE_MEDIUM = {10.0f, 2000.0f, 800.0f, 8000.0f, 400
 const MotionProfileParams PROFILE_NERVOUS = {5.0f, 2500.0f, 1200.0f, 12000.0f, 600.0f, 1200.0f};
 
 uint8_t currentProfile = PROFILE_MEDIUM_IDX;
+bool changementDeDYNAMIQUE = false;
 
 void applyMotionProfile(uint8_t profileIndex) {
   const MotionProfileParams* p;
@@ -265,7 +267,13 @@ void parseData() {
   uint8_t requestedProfile;
   if (profRaw <= 0) requestedProfile = PROFILE_SOFT_IDX;
   else if (profRaw == 1) requestedProfile = PROFILE_MEDIUM_IDX;
-  else requestedProfile = PROFILE_NERVOUS_IDX;
+  else if (profRaw == 2) requestedProfile = PROFILE_NERVOUS_IDX;
+  else requestedProfile = currentProfile;
+
+  // activer/désactiver mode changementDeDYNAMIQUE si la donnée profil vaut PROFILE_DYNAMIC_IDX
+  if (profRaw == PROFILE_DYNAMIC_IDX) changementDeDYNAMIQUE = true;
+  else changementDeDYNAMIQUE = false;
+
   if (requestedProfile != currentProfile) {
     currentProfile = requestedProfile;
     applyMotionProfile(currentProfile);
@@ -313,6 +321,34 @@ void getFlipRates(unsigned long flipAgeMs, float &vUp, float &vDown, float &aUp,
     float factor = FLIP_LIN_STRENGTH + (1.0f - FLIP_LIN_STRENGTH) * t;
     vUp *= factor; vDown *= factor; aUp *= factor; aDown *= factor;
   }
+}
+
+// nouveau : calculer des taux dynamiques en fonction de la distance
+void computeDynamicRates(long distAbs, float &vUp, float &vDown, float &aUp, float &aDown) {
+  float baseVUp   = NORM_V_UP_PER_S;
+  float baseVDown = NORM_V_DOWN_PER_S;
+  float baseAUp   = NORM_A_UP_PER_S;
+  float baseADown = NORM_A_DOWN_PER_S;
+
+  float nd = 0.0f;
+  float span = (HEUR_D_MAX - HEUR_D_MIN);
+  if (span > 0.001f) nd = ((float)distAbs - HEUR_D_MIN) / span;
+  if (nd < 0.0f) nd = 0.0f;
+  if (nd > 1.0f) nd = 1.0f;
+
+  float factor = 0.25f + 0.75f * nd;
+  float curve = factor * factor * (3.0f - 2.0f * factor);
+  float finalFactor = 0.4f + 0.6f * curve;
+
+  vUp   = baseVUp   * finalFactor;
+  vDown = baseVDown * finalFactor;
+  aUp   = baseAUp   * finalFactor;
+  aDown = baseADown * finalFactor;
+
+  if (vUp < 1000.0f) vUp = 1000.0f;
+  if (vDown < 1000.0f) vDown = 1000.0f;
+  if (aUp < 200.0f) aUp = 200.0f;
+  if (aDown < 200.0f) aDown = 200.0f;
 }
 
 float computeSpeedFromDistance(long distAbs) {
@@ -493,11 +529,26 @@ void loop() {
     lastDir[i] = dirNow;
 
     float vUpRate = NORM_V_UP_PER_S, vDownRate = NORM_V_DOWN_PER_S, aUpRate = NORM_A_UP_PER_S, aDownRate = NORM_A_DOWN_PER_S;
+
+    // si mode changement dynamique activé, adapter les rates selon la distance
+    if (changementDeDYNAMIQUE) {
+      computeDynamicRates(distAbs, vUpRate, vDownRate, aUpRate, aDownRate);
+    }
+
     if (inFlip[i]) {
       unsigned long flipAge = nowMs - flipStartMs[i];
       if (flipAge >= FLIP_TOTAL_MS) inFlip[i] = false;
       else {
-        getFlipRates(flipAge, vUpRate, vDownRate, aUpRate, aDownRate);
+        float f_vUp, f_vDown, f_aUp, f_aDown;
+        getFlipRates(flipAge, f_vUp, f_vDown, f_aUp, f_aDown);
+        if (changementDeDYNAMIQUE) {
+          vUpRate   = vUpRate   * (f_vUp   / NORM_V_UP_PER_S);
+          vDownRate = vDownRate * (f_vDown / NORM_V_DOWN_PER_S);
+          aUpRate   = aUpRate   * (f_aUp   / NORM_A_UP_PER_S);
+          aDownRate = aDownRate * (f_aDown / NORM_A_DOWN_PER_S);
+        } else {
+          vUpRate = f_vUp; vDownRate = f_vDown; aUpRate = f_aUp; aDownRate = f_aDown;
+        }
         if (vTarget < VMIN_USEFUL) vTarget = VMIN_USEFUL;
         if (aTarget < ACC_MIN_USEFUL) aTarget = ACC_MIN_USEFUL;
       }
