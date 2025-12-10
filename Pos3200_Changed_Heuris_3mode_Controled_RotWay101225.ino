@@ -1,5 +1,7 @@
 #include <AccelStepper.h>
 
+// ...existing code...
+
 // ===================== CONFIG GÉNÉRALE =====================
 #define NBMOTEURS    10
 #define NBDATA       34      //
@@ -173,31 +175,50 @@ unsigned long lastDistMs = 0;
 const unsigned long PRINT_INTERVAL_MS = 25;
 
 // ===================== RÉCEPTION RAW AVEC <...> =====================
+// Réception renforcée : timeout de trame, protection débordement buffer,
+// null-termination sûre.
 void recvWithStartEndMarkers() {
   static bool recvInProgress = false;
   static byte ndx = 0;
+  static unsigned long frameStartMs = 0;
   const char startMarker = '<';
   const char endMarker   = '>';
-  char rc;
+  const unsigned long FRAME_TIMEOUT_MS = 50; // abort incomplete frames after this
 
   while (Serial.available() > 0 && newData == false) {
-    rc = Serial.read();
+    char rc = (char)Serial.read();
     if (rc == '\r' || rc == '\n') continue;  // on ignore CR/LF
 
-    if (recvInProgress) {
-      if (rc != endMarker) {
-        if (ndx < numChars - 1) {
-          receivedChars[ndx++] = rc;
-        }
-      } else {
+    if (!recvInProgress) {
+      if (rc == startMarker) {
+        recvInProgress = true;
+        ndx = 0;
+        frameStartMs = millis();
+      }
+    } else {
+      // abort if frame too old
+      if (millis() - frameStartMs > FRAME_TIMEOUT_MS) {
+        recvInProgress = false;
+        ndx = 0;
+        continue;
+      }
+      if (rc == endMarker) {
+        // finish frame safely
+        if (ndx >= numChars) ndx = numChars - 1;
         receivedChars[ndx] = '\0';
         recvInProgress = false;
         ndx = 0;
         newData = true; // trame complète prête
+        break;
+      } else {
+        if (ndx < numChars - 1) {
+          receivedChars[ndx++] = rc;
+        } else {
+          // buffer full -> abort this frame
+          recvInProgress = false;
+          ndx = 0;
+        }
       }
-    } else if (rc == startMarker) {
-      recvInProgress = true;
-      ndx = 0;
     }
   }
 }
@@ -281,19 +302,44 @@ void maybeSendOUTSerial() {
 }
 
 // ===================== PARSE & APPLY (données venant de Max) =====================
+// Parsing renforcé : strtol avec vérification, complétion si moins de tokens,
+// application de profil et mise à jour des cibles.
 void parseData() {
-  strcpy(tempChars, receivedChars);
-  char* tok = strtok(tempChars, ",");
+  // copie sûre
+  strncpy(tempChars, receivedChars, numChars);
+  tempChars[numChars - 1] = '\0';
 
-  // On attend une simple liste : val0,val1,...,val32 (33 valeurs)
-  for (uint8_t i = 0; i < NBDATA; i++) {
-    if (tok) {
-      ABC[i] = atol(tok);
-      tok = strtok(NULL, ",");
+  char *ptr = tempChars;
+  char *endptr;
+  uint8_t tokenIndex = 0;
+  bool parseError = false;
+
+  // parse tokens séparés par ','
+  while (tokenIndex < NBDATA && *ptr != '\0') {
+    long val = strtol(ptr, &endptr, 10);
+    if (endptr == ptr) {
+      // pas de conversion valide
+      parseError = true;
+      break;
+    }
+    ABC[tokenIndex++] = val;
+
+    if (*endptr == ',') {
+      ptr = endptr + 1;
     } else {
+      // fin de la chaîne
       break;
     }
   }
+
+  if (parseError) {
+    // on rejette la trame malformée
+    newData = false;
+    return;
+  }
+
+  // Si moins de tokens fournis, remplir le reste à 0
+  for (uint8_t i = tokenIndex; i < NBDATA; ++i) ABC[i] = 0;
 
   // ✨ 1) Profil de mouvement : ABC[PROFILE_DATA_INDEX] = 0 / 1 / 2
   long profRaw = ABC[PROFILE_DATA_INDEX];
@@ -551,18 +597,19 @@ void loop() {
   }
 
   // 5) Envois périodiques
-  if (nowMs - lastInMs >= PRINT_INTERVAL_MS) {
-    lastInMs = nowMs;
+  unsigned long nowMs2 = millis();
+  if (nowMs2 - lastInMs >= PRINT_INTERVAL_MS) {
+    lastInMs = nowMs2;
     maybeSendINSerial();
   }
 
-  if (nowMs - lastOutMs >= PRINT_INTERVAL_MS) {
-    lastOutMs = nowMs;
+  if (nowMs2 - lastOutMs >= PRINT_INTERVAL_MS) {
+    lastOutMs = nowMs2;
     maybeSendOUTSerial();
   }
 
-  if (nowMs - lastDistMs >= PRINT_INTERVAL_MS) {
-    lastDistMs = nowMs;
+  if (nowMs2 - lastDistMs >= PRINT_INTERVAL_MS) {
+    lastDistMs = nowMs2;
     maybeSendDISTSerial();
   }
 }
