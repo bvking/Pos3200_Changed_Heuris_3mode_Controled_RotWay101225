@@ -1,0 +1,23 @@
+{
+    "arduino.enableArduinoAutoBuild": true,
+    "arduino.defaultBaudRate": 115200,
+    "arduino.path": "C:\\Program Files (x86)\\Arduino",
+    "C_Cpp.default.configurationProvider": "ms-vscode.cmake-tools",
+    "C_Cpp.default.includePath": [
+        "${workspaceFolder}/**",
+        "${workspaceFolder}/include",
+        "${workspaceFolder}/lib/**"
+    ],
+    "C_Cpp.default.defines": [
+        "ARDUINO=10805",
+        "ESP8266",
+        "ESP32"
+    ],
+    "editor.formatOnSave": true,
+    "files.autoSave": "afterDelay",
+    "files.associations": {
+        "*.ino": "arduino",
+        "*.h": "c",
+        "*.cpp": "cpp"
+    }
+}
