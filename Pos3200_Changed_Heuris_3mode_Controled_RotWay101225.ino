@@ -1,3 +1,4 @@
+// ...existing code...
 #include <AccelStepper.h>
 
 // ===================== CONFIG GÉNÉRALE =====================
@@ -23,7 +24,7 @@ const int8_t ENABLEPIN[NBMOTEURS] = {4, 7, 10, 24, 27, 30, 35, 38, 39, 42};
 
 AccelStepper stepper[NBMOTEURS] = {
   AccelStepper(STEP_DRIVER, PINSPEED[0], PINDIRECTION[0]),
-  AccelStepper(STEP_DRIVER] PINDIRECTION[1]),
+  AccelStepper(STEP_DRIVER, PINSPEED[1], PINDIRECTION[1]),
   AccelStepper(STEP_DRIVER, PINSPEED[2], PINDIRECTION[2]),
   AccelStepper(STEP_DRIVER, PINSPEED[3], PINDIRECTION[3]),
   AccelStepper(STEP_DRIVER, PINSPEED[4], PINDIRECTION[4]),
@@ -36,7 +37,7 @@ AccelStepper stepper[NBMOTEURS] = {
 
 // ===================== SIGNE PAR MOTEUR =====================
 // posMax = DIR_SIGN[i] * currentPosition()
- // +1, +1, +1, +1, +1, +1, +1, +1, +1, +1 // use to see motors in same direction when it displays pos
+// +1, +1, +1, +1, +1, +1, +1, +1, +1, +1 // use to see motors in same direction when it displays pos
 int8_t DIR_SIGN[NBMOTEURS] = {-1, -1, +1, -1, -1, -1, +1, +1, -1, -1};
 
 // ===================== PROFIL VITESSE / ACCEL =====================
@@ -76,6 +77,14 @@ float HEUR_V_MAX;   // vitesse max
 float HEUR_A_MIN;   // accel min
 float HEUR_A_MAX;   // accel max
 
+// --- Per-motor presets (initialized from profile defaults, can be tuned per motor)
+float MOTOR_HEUR_D_MIN[NBMOTEURS];
+float MOTOR_HEUR_D_MAX[NBMOTEURS];
+float MOTOR_HEUR_V_MIN[NBMOTEURS];
+float MOTOR_HEUR_V_MAX[NBMOTEURS];
+float MOTOR_HEUR_A_MIN[NBMOTEURS];
+float MOTOR_HEUR_A_MAX[NBMOTEURS];
+
 // ✨ Index symboliques de profils
 const uint8_t PROFILE_SOFT_IDX    = 0;
 const uint8_t PROFILE_MEDIUM_IDX  = 1;
@@ -98,6 +107,18 @@ const MotionProfileParams PROFILE_NERVOUS = {5.0f, 2500.0f, 1200.0f, 12000.0f, 6
 uint8_t currentProfile = PROFILE_MEDIUM_IDX;
 bool changementDeDYNAMIQUE = false;
 
+// apply per-motor arrays from HEUR_* defaults
+void applyPerMotorPresetsFromProfile() {
+  for (uint8_t i = 0; i < NBMOTEURS; ++i) {
+    MOTOR_HEUR_D_MIN[i] = HEUR_D_MIN;
+    MOTOR_HEUR_D_MAX[i] = HEUR_D_MAX;
+    MOTOR_HEUR_V_MIN[i] = HEUR_V_MIN;
+    MOTOR_HEUR_V_MAX[i] = HEUR_V_MAX;
+    MOTOR_HEUR_A_MIN[i] = HEUR_A_MIN;
+    MOTOR_HEUR_A_MAX[i] = HEUR_A_MAX;
+  }
+}
+
 void applyMotionProfile(uint8_t profileIndex) {
   const MotionProfileParams* p;
   switch (profileIndex) {
@@ -112,6 +133,9 @@ void applyMotionProfile(uint8_t profileIndex) {
   HEUR_V_MAX = p->vMax;
   HEUR_A_MIN = p->aMin;
   HEUR_A_MAX = p->aMax;
+
+  // update per-motor presets
+  applyPerMotorPresetsFromProfile();
 }
 
 // ===================== ETAT MOTEURS / HEURISTIQUES =====================
@@ -280,8 +304,8 @@ void parseData() {
     currentProfile = requestedProfile;
     applyMotionProfile(currentProfile);
     for (uint8_t i = 0; i < NBMOTEURS; i++) {
-      if (vUsed[i] < HEUR_V_MIN) vUsed[i] = HEUR_V_MIN;
-      if (aUsed[i] < HEUR_A_MIN) aUsed[i] = HEUR_A_MIN;
+      if (vUsed[i] < MOTOR_HEUR_V_MIN[i]) vUsed[i] = MOTOR_HEUR_V_MIN[i];
+      if (aUsed[i] < MOTOR_HEUR_A_MIN[i]) aUsed[i] = MOTOR_HEUR_A_MIN[i];
     }
   }
 
@@ -325,16 +349,18 @@ void getFlipRates(unsigned long flipAgeMs, float &vUp, float &vDown, float &aUp,
   }
 }
 
-// nouveau : calculer des taux dynamiques en fonction de la distance
-void computeDynamicRates(long distAbs, float &vUp, float &vDown, float &aUp, float &aDown) {
+// nouveau : calculer des taux dynamiques en fonction de la distance (par-moteur)
+void computeDynamicRates(uint8_t motorIdx, long distAbs, float &vUp, float &vDown, float &aUp, float &aDown) {
   float baseVUp   = NORM_V_UP_PER_S;
   float baseVDown = NORM_V_DOWN_PER_S;
   float baseAUp   = NORM_A_UP_PER_S;
   float baseADown = NORM_A_DOWN_PER_S;
 
+  float dmin = MOTOR_HEUR_D_MIN[motorIdx];
+  float dmax = MOTOR_HEUR_D_MAX[motorIdx];
   float nd = 0.0f;
-  float span = (HEUR_D_MAX - HEUR_D_MIN);
-  if (span > 0.001f) nd = ((float)distAbs - HEUR_D_MIN) / span;
+  float span = (dmax - dmin);
+  if (span > 0.001f) nd = ((float)distAbs - dmin) / span;
   if (nd < 0.0f) nd = 0.0f;
   if (nd > 1.0f) nd = 1.0f;
 
@@ -353,27 +379,37 @@ void computeDynamicRates(long distAbs, float &vUp, float &vDown, float &aUp, flo
   if (aDown < 200.0f) aDown = 200.0f;
 }
 
-float computeSpeedFromDistance(long distAbs) {
+float computeSpeedFromDistance(uint8_t motorIdx, long distAbs) {
+  float dmin = MOTOR_HEUR_D_MIN[motorIdx];
+  float dmax = MOTOR_HEUR_D_MAX[motorIdx];
+  float vmin = MOTOR_HEUR_V_MIN[motorIdx];
+  float vmax = MOTOR_HEUR_V_MAX[motorIdx];
+
   float d = (float)distAbs;
-  if (d < HEUR_D_MIN) d = HEUR_D_MIN;
-  if (d > HEUR_D_MAX) d = HEUR_D_MAX;
-  float x = (d - HEUR_D_MIN) / (HEUR_D_MAX - HEUR_D_MIN);
+  if (d < dmin) d = dmin;
+  if (d > dmax) d = dmax;
+  float x = (d - dmin) / (dmax - dmin);
   float f = x * x * (3.0f - 2.0f * x);
-  float v = HEUR_V_MIN + f * (HEUR_V_MAX - HEUR_V_MIN);
+  float v = vmin + f * (vmax - vmin);
   if (v > VMAX_HARD) v = VMAX_HARD;
-  if (v < HEUR_V_MIN) v = HEUR_V_MIN;
+  if (v < vmin) v = vmin;
   return v;
 }
 
-float computeAccelFromDistance(long distAbs) {
+float computeAccelFromDistance(uint8_t motorIdx, long distAbs) {
+  float dmin = MOTOR_HEUR_D_MIN[motorIdx];
+  float dmax = MOTOR_HEUR_D_MAX[motorIdx];
+  float amin = MOTOR_HEUR_A_MIN[motorIdx];
+  float amax = MOTOR_HEUR_A_MAX[motorIdx];
+
   float d = (float)distAbs;
-  if (d < HEUR_D_MIN) d = HEUR_D_MIN;
-  if (d > HEUR_D_MAX) d = HEUR_D_MAX;
-  float x = (d - HEUR_D_MIN) / (HEUR_D_MAX - HEUR_D_MIN);
+  if (d < dmin) d = dmin;
+  if (d > dmax) d = dmax;
+  float x = (d - dmin) / (dmax - dmin);
   float f = x * x * (3.0f - 2.0f * x);
-  float a = HEUR_A_MIN + f * (HEUR_A_MAX - HEUR_A_MIN);
+  float a = amin + f * (amax - amin);
   if (a > ACC_HARD) a = ACC_HARD;
-  if (a < HEUR_A_MIN) a = HEUR_A_MIN;
+  if (a < amin) a = amin;
   return a;
 }
 
@@ -388,12 +424,12 @@ void setup() {
     if (ENABLEPIN[i] >= 0) { pinMode(ENABLEPIN[i], OUTPUT); digitalWrite(ENABLEPIN[i], LOW); }
     pinMode(PINDIRECTION[i], OUTPUT);
     pinMode(PINSPEED[i], OUTPUT);
-    stepper[i].setMaxSpeed(HEUR_V_MIN);
-    stepper[i].setAcceleration(HEUR_A_MIN);
+    stepper[i].setMaxSpeed(MOTOR_HEUR_V_MIN[i]);
+    stepper[i].setAcceleration(MOTOR_HEUR_A_MIN[i]);
     stepper[i].moveTo(1600);
     stepper[i].run();
-    vUsed[i] = HEUR_V_MIN;
-    aUsed[i] = HEUR_A_MIN;
+    vUsed[i] = MOTOR_HEUR_V_MIN[i];
+    aUsed[i] = MOTOR_HEUR_A_MIN[i];
     lastDir[i] = 0;
     inFlip[i]  = false;
     flipStartMs[i] = 0;
@@ -516,8 +552,8 @@ void loop() {
     }
 
     // normal behaviour
-    float vTarget = computeSpeedFromDistance(distAbs);
-    float aTarget = computeAccelFromDistance(distAbs);
+    float vTarget = computeSpeedFromDistance(i, distAbs);
+    float aTarget = computeAccelFromDistance(i, distAbs);
     float vStream = lastStreamV[i];
     if (vStream > vTarget) {
       vTarget = vStream;
@@ -534,7 +570,7 @@ void loop() {
 
     // si mode changement dynamique activé, adapter les rates selon la distance
     if (changementDeDYNAMIQUE) {
-      computeDynamicRates(distAbs, vUpRate, vDownRate, aUpRate, aDownRate);
+      computeDynamicRates(i, distAbs, vUpRate, vDownRate, aUpRate, aDownRate);
     }
 
     if (inFlip[i]) {
@@ -559,9 +595,9 @@ void loop() {
     vUsed[i] = approachTimed(vUsed[i], vTarget, vUpRate, vDownRate, dtMs);
     aUsed[i] = approachTimed(aUsed[i], aTarget, aUpRate, aDownRate, dtMs);
     if (vUsed[i] > VMAX_HARD) vUsed[i] = VMAX_HARD;
-    if (vUsed[i] < HEUR_V_MIN) vUsed[i] = HEUR_V_MIN;
+    if (vUsed[i] < MOTOR_HEUR_V_MIN[i]) vUsed[i] = MOTOR_HEUR_V_MIN[i];
     if (aUsed[i] > ACC_HARD) aUsed[i] = ACC_HARD;
-    if (aUsed[i] < HEUR_A_MIN) aUsed[i] = HEUR_A_MIN;
+    if (aUsed[i] < MOTOR_HEUR_A_MIN[i]) aUsed[i] = MOTOR_HEUR_A_MIN[i];
 
     stepper[i].setMaxSpeed(vUsed[i]);
     stepper[i].setAcceleration(aUsed[i]);
@@ -580,3 +616,4 @@ void loop() {
   // mise à jour positions de référence pour la prochaine détection
   for (uint8_t i = 0; i < NBMOTEURS; ++i) lastLoopPosition[i] = stepper[i].currentPosition();
 }
+// ...existing code...
