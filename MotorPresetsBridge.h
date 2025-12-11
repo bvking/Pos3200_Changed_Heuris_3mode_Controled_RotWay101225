@@ -1,3 +1,4 @@
+// ...existing code...
 #ifndef MOTOR_PRESETS_BRIDGE_H
 #define MOTOR_PRESETS_BRIDGE_H
 
@@ -18,17 +19,27 @@ struct MotorHeurPreset {
   float aMin, aMax;
 };
 
-// valeurs par défaut (10 moteurs) — modifie ici si besoin
+// Presets copiés depuis MotorPresets.cpp (10 moteurs)
 static const MotorHeurPreset PER_MOTOR_PRESETS[10] = {
+  // motor0
+  {5.0f, 2500.0f, 1200.0f, 12000.0f, 600.0f, 1200.0f},
+  // motor1
   {10.0f, 2000.0f, 800.0f, 8000.0f, 400.0f, 900.0f},
+  // motor2
   {10.0f, 2000.0f, 800.0f, 8000.0f, 400.0f, 900.0f},
+  // motor3
+  {10.0f, 1500.0f, 400.0f, 4000.0f, 200.0f, 600.0f},
+  // motor4
   {10.0f, 2000.0f, 800.0f, 8000.0f, 400.0f, 900.0f},
+  // motor5
   {10.0f, 2000.0f, 800.0f, 8000.0f, 400.0f, 900.0f},
+  // motor6
+  {5.0f, 2500.0f, 1200.0f, 12000.0f, 600.0f, 1200.0f},
+  // motor7
   {10.0f, 2000.0f, 800.0f, 8000.0f, 400.0f, 900.0f},
-  {10.0f, 2000.0f, 800.0f, 8000.0f, 400.0f, 900.0f},
-  {10.0f, 2000.0f, 800.0f, 8000.0f, 400.0f, 900.0f},
-  {10.0f, 2000.0f, 800.0f, 8000.0f, 400.0f, 900.0f},
-  {10.0f, 2000.0f, 800.0f, 8000.0f, 400.0f, 900.0f},
+  // motor8
+  {10.0f, 1500.0f, 400.0f, 4000.0f, 200.0f, 600.0f},
+  // motor9
   {10.0f, 2000.0f, 800.0f, 8000.0f, 400.0f, 900.0f}
 };
 
@@ -45,3 +56,4 @@ inline void loadPerMotorPresetsFromLibrary() {
 }
 
 #endif // MOTOR_PRESETS_BRIDGE_H
+// ...existing code...
