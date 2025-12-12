@@ -37,7 +37,6 @@ AccelStepper stepper[NBMOTEURS] = {
 
 // ===================== SIGNE PAR MOTEUR =====================
 // posMax = DIR_SIGN[i] * currentPosition()
-// +1, +1, +1, +1, +1, +1, +1, +1, +1, +1 // use to see motors in same direction when it displays pos
 int8_t DIR_SIGN[NBMOTEURS] = {-1, -1, +1, -1, -1, -1, +1, +1, -1, -1};
 
 // ===================== PROFIL VITESSE / ACCEL =====================
@@ -106,6 +105,8 @@ const MotionProfileParams PROFILE_NERVOUS = {5.0f, 2500.0f, 1200.0f, 12000.0f, 6
 
 uint8_t currentProfile = PROFILE_MEDIUM_IDX;
 bool changementDeDYNAMIQUE = false;
+// per-motor override flags for dynamic mode (false = use global flag only)
+bool changementDeDYNAMIQUE_perMotor[NBMOTEURS] = { false };
 
 // apply per-motor arrays from HEUR_* defaults
 void applyPerMotorPresetsFromProfile() {
@@ -295,10 +296,30 @@ void parseData() {
   else if (profRaw == 2) requestedProfile = PROFILE_NERVOUS_IDX;
   else requestedProfile = currentProfile;
 
-  // activer/désactiver mode changementDeDYNAMIQUE si la donnée profil vaut PROFILE_DYNAMIC_IDX
+  // activer/désactiver mode changementDeDYNAMIQUE
   long dynRaw = ABC[DYNAMIC_CMD_INDEX];
-  if (dynRaw != 0) changementDeDYNAMIQUE = (dynRaw > 0);
-  else changementDeDYNAMIQUE = (profRaw == PROFILE_DYNAMIC_IDX);
+  // dynRaw semantics:
+  //  0 = fallback to profile (PROFILE_DYNAMIC_IDX)
+  //  1 = global ON
+  //  2 = per-motor mask in ABC[10..19] (non-zero -> enable per motor)
+  // <0 or other = global OFF
+  if (dynRaw == 1) {
+    changementDeDYNAMIQUE = true;
+    for (uint8_t m = 0; m < NBMOTEURS; ++m) changementDeDYNAMIQUE_perMotor[m] = false;
+  } else if (dynRaw == 2) {
+    changementDeDYNAMIQUE = false;
+    for (uint8_t m = 0; m < NBMOTEURS; ++m) {
+      uint8_t idx = 10 + m;
+      if (idx < NBDATA) changementDeDYNAMIQUE_perMotor[m] = (ABC[idx] != 0);
+      else changementDeDYNAMIQUE_perMotor[m] = false;
+    }
+  } else if (dynRaw == 0) {
+    changementDeDYNAMIQUE = (profRaw == PROFILE_DYNAMIC_IDX);
+    for (uint8_t m = 0; m < NBMOTEURS; ++m) changementDeDYNAMIQUE_perMotor[m] = false;
+  } else {
+    changementDeDYNAMIQUE = false;
+    for (uint8_t m = 0; m < NBMOTEURS; ++m) changementDeDYNAMIQUE_perMotor[m] = false;
+  }
 
   if (requestedProfile != currentProfile) {
     currentProfile = requestedProfile;
@@ -420,7 +441,7 @@ void setup() {
   Serial.begin(115200);
   applyMotionProfile(currentProfile);
 
-    // charger presets par moteur depuis MotorPresetsBridge.h
+  // charger presets par moteur depuis MotorPresetsBridge.h
   loadPerMotorPresetsFromLibrary();
 
   for (uint8_t i = 0; i < NBMOTEURS; i++) {
@@ -572,8 +593,9 @@ void loop() {
 
     float vUpRate = NORM_V_UP_PER_S, vDownRate = NORM_V_DOWN_PER_S, aUpRate = NORM_A_UP_PER_S, aDownRate = NORM_A_DOWN_PER_S;
 
-    // si mode changement dynamique activé, adapter les rates selon la distance
-    if (changementDeDYNAMIQUE) {
+    // déterminer si on utilise le changement dynamique pour ce moteur (global OU override per-motor)
+    bool useDynamicThisMotor = changementDeDYNAMIQUE || changementDeDYNAMIQUE_perMotor[i];
+    if (useDynamicThisMotor) {
       computeDynamicRates(i, distAbs, vUpRate, vDownRate, aUpRate, aDownRate);
     }
 
@@ -583,7 +605,7 @@ void loop() {
       else {
         float f_vUp, f_vDown, f_aUp, f_aDown;
         getFlipRates(flipAge, f_vUp, f_vDown, f_aUp, f_aDown);
-        if (changementDeDYNAMIQUE) {
+        if (useDynamicThisMotor) {
           vUpRate   = vUpRate   * (f_vUp   / NORM_V_UP_PER_S);
           vDownRate = vDownRate * (f_vDown / NORM_V_DOWN_PER_S);
           aUpRate   = aUpRate   * (f_aUp   / NORM_A_UP_PER_S);
@@ -620,4 +642,3 @@ void loop() {
   // mise à jour positions de référence pour la prochaine détection
   for (uint8_t i = 0; i < NBMOTEURS; ++i) lastLoopPosition[i] = stepper[i].currentPosition();
 }
-// ...existing code...
