@@ -1,4 +1,3 @@
-// ...existing code...
 #include <AccelStepper.h>
 #include "MotorPresetsBridge.h"
 
@@ -423,7 +422,7 @@ void setup() {
 
     // charger presets par moteur depuis MotorPresetsBridge.h
   loadPerMotorPresetsFromLibrary();
-  
+
   for (uint8_t i = 0; i < NBMOTEURS; i++) {
     stepper[i].setMinPulseWidth(5);
     if (ENABLEPIN[i] >= 0) { pinMode(ENABLEPIN[i], OUTPUT); digitalWrite(ENABLEPIN[i], LOW); }
