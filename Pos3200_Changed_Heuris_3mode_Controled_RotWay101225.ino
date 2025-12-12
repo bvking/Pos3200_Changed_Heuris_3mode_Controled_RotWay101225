@@ -284,8 +284,21 @@ void maybeSendOUTSerial() {
 }
 
 // ===================== PARSING TRAME & APPLICATION =====================
-vvoid parseData() {
-  // ...existing code up to reading profRaw/dynRaw...
+void parseData() {
+    strncpy(tempChars, receivedChars, numChars);
+  tempChars[numChars - 1] = '\0';
+  char *ptr = tempChars;
+  char *endptr;
+  uint8_t tokenIndex = 0;
+  bool parseError = false;
+  while (tokenIndex < NBDATA && *ptr != '\0') {
+    long val = strtol(ptr, &endptr, 10);
+    if (endptr == ptr) { parseError = true; break; }
+    ABC[tokenIndex++] = val;
+    if (*endptr == ',') ptr = endptr + 1; else break;
+  }
+  if (parseError) { newData = false; return; }
+  for (uint8_t i = tokenIndex; i < NBDATA; ++i) ABC[i] = 0;
 
   // PROFILE: ABC[33] modulates reactivity: 0=SOFT,1=MEDIUM,2=NERVOUS,3=VERY_NERVOUS
   long profRaw = ABC[PROFILE_DATA_INDEX];
