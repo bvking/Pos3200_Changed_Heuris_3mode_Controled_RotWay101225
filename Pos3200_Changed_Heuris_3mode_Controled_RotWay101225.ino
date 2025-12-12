@@ -10,9 +10,11 @@
 // Indexs dans ABC:
 //  - ABC[32] : commande d'arrêt d'urgence (0 = clear, 1 = start ramp, 2 = forced instant)
 //  - ABC[33] : profil réactivité 0=SOFT,1=MEDIUM,2=NERVOUS
+//  - ABC[31] : dynamic command (0=fallback to profile,1=force global ON,2=mask per-motor,3=auto per-motor, <0=force OFF)
 const uint8_t PROFILE_DATA_INDEX = NBDATA - 1;  // = 33
 const uint8_t EMERGENCY_CMD_INDEX = 32;
 const uint8_t DYNAMIC_CMD_INDEX = 31;
+const long DYN_MODE_AUTO = 3;
 
 // ===================== PINS MOTEURS =====================
 // Adapter à ton câblage réel.
@@ -107,6 +109,12 @@ uint8_t currentProfile = PROFILE_MEDIUM_IDX;
 bool changementDeDYNAMIQUE = false;
 // per-motor override flags for dynamic mode (false = use global flag only)
 bool changementDeDYNAMIQUE_perMotor[NBMOTEURS] = { false };
+
+// Automatic dynamic detection support
+const uint8_t DYN_HISTORY_WINDOW = 8;
+long distHistory[NBMOTEURS][DYN_HISTORY_WINDOW];
+uint8_t distHistIdx[NBMOTEURS];
+bool dynAutoEnabled[NBMOTEURS]; // last computed auto decision
 
 // apply per-motor arrays from HEUR_* defaults
 void applyPerMotorPresetsFromProfile() {
@@ -302,23 +310,37 @@ void parseData() {
   //  0 = fallback to profile (PROFILE_DYNAMIC_IDX)
   //  1 = global ON
   //  2 = per-motor mask in ABC[10..19] (non-zero -> enable per motor)
+  //  3 = AUTO per-motor (heuristic based on recent requested distances)
   // <0 or other = global OFF
   if (dynRaw == 1) {
     changementDeDYNAMIQUE = true;
-    for (uint8_t m = 0; m < NBMOTEURS; ++m) changementDeDYNAMIQUE_perMotor[m] = false;
+    for (uint8_t m = 0; m < NBMOTEURS; ++m) {
+      changementDeDYNAMIQUE_perMotor[m] = false;
+      dynAutoEnabled[m] = false;
+    }
   } else if (dynRaw == 2) {
     changementDeDYNAMIQUE = false;
     for (uint8_t m = 0; m < NBMOTEURS; ++m) {
       uint8_t idx = 10 + m;
       if (idx < NBDATA) changementDeDYNAMIQUE_perMotor[m] = (ABC[idx] != 0);
       else changementDeDYNAMIQUE_perMotor[m] = false;
+      dynAutoEnabled[m] = false;
     }
+  } else if (dynRaw == DYN_MODE_AUTO) {
+    changementDeDYNAMIQUE = false; // global off, per-motor auto will decide
+    // auto decision will be computed below when we have per-motor deltas
   } else if (dynRaw == 0) {
     changementDeDYNAMIQUE = (profRaw == PROFILE_DYNAMIC_IDX);
-    for (uint8_t m = 0; m < NBMOTEURS; ++m) changementDeDYNAMIQUE_perMotor[m] = false;
+    for (uint8_t m = 0; m < NBMOTEURS; ++m) {
+      changementDeDYNAMIQUE_perMotor[m] = false;
+      dynAutoEnabled[m] = false;
+    }
   } else {
     changementDeDYNAMIQUE = false;
-    for (uint8_t m = 0; m < NBMOTEURS; ++m) changementDeDYNAMIQUE_perMotor[m] = false;
+    for (uint8_t m = 0; m < NBMOTEURS; ++m) {
+      changementDeDYNAMIQUE_perMotor[m] = false;
+      dynAutoEnabled[m] = false;
+    }
   }
 
   if (requestedProfile != currentProfile) {
@@ -330,15 +352,62 @@ void parseData() {
     }
   }
 
-  // update target positions (ABC[0..9])
+  // update target positions (ABC[0..9]) and maintain history for auto dynamic detection
   for (uint8_t i = 0; i < NBMOTEURS; i++) {
     long rawPos    = ABC[i];
     long signedPos = DIR_SIGN[i] * rawPos;
     long d = signedPos - lastStreamTarget[i];
+    // lastStreamTarget used also to compute lastStreamV
     lastStreamTarget[i] = signedPos;
     lastStreamV[i] = (float)abs(d) / 0.025f;
     targetPos[i] = signedPos;
     stepper[i].moveTo(signedPos);
+
+    // update history of requested deltas (magnitude of new request)
+    long mag = (d >= 0) ? d : -d;
+    distHistory[i][distHistIdx[i]] = mag;
+    distHistIdx[i] = (distHistIdx[i] + 1) % DYN_HISTORY_WINDOW;
+  }
+
+  // If AUTO mode requested (dynRaw == DYN_MODE_AUTO), compute per-motor heuristic decisions
+  if (dynRaw == DYN_MODE_AUTO) {
+    // Heuristic:
+    //  - compute mean and stddev on last DYN_HISTORY_WINDOW requested deltas
+    //  - score = 0.6 * mean + 0.4 * stddev
+    //  - enable dynamic for motor if score > AUTO_ENABLE_SCORE (tunable)
+    const float AUTO_ENABLE_SCORE = 800.0f; // tunable threshold
+    for (uint8_t i = 0; i < NBMOTEURS; ++i) {
+      // compute mean and stddev
+      long sum = 0;
+      long maxv = 0;
+      for (uint8_t k = 0; k < DYN_HISTORY_WINDOW; ++k) {
+        long v = distHistory[i][k];
+        sum += v;
+        if (v > maxv) maxv = v;
+      }
+      float mean = (float)sum / (float)DYN_HISTORY_WINDOW;
+      // stddev
+      float sqsum = 0.0f;
+      for (uint8_t k = 0; k < DYN_HISTORY_WINDOW; ++k) {
+        float diff = (float)distHistory[i][k] - mean;
+        sqsum += diff * diff;
+      }
+      float stddev = sqrt(sqsum / (float)DYN_HISTORY_WINDOW);
+      float score = 0.6f * mean + 0.4f * stddev;
+
+      // additional rules:
+      //  - if recent requests are very small (mean < 200) -> still enable dynamic (fine control)
+      //  - if recent requests are extremely large (mean > 3000) -> enable dynamic
+      bool enable = false;
+      if (mean < 200.0f) enable = true;
+      else if (mean > 3000.0f) enable = true;
+      else if (score > AUTO_ENABLE_SCORE) enable = true;
+      else enable = false;
+
+      dynAutoEnabled[i] = enable;
+      // reset explicit perMask flag when in AUTO mode
+      changementDeDYNAMIQUE_perMotor[i] = false;
+    }
   }
 
   newData = false;
@@ -444,6 +513,13 @@ void setup() {
   // charger presets par moteur depuis MotorPresetsBridge.h
   loadPerMotorPresetsFromLibrary();
 
+  // init history arrays
+  for (uint8_t i = 0; i < NBMOTEURS; ++i) {
+    for (uint8_t k = 0; k < DYN_HISTORY_WINDOW; ++k) distHistory[i][k] = 0;
+    distHistIdx[i] = 0;
+    dynAutoEnabled[i] = false;
+  }
+
   for (uint8_t i = 0; i < NBMOTEURS; i++) {
     stepper[i].setMinPulseWidth(5);
     if (ENABLEPIN[i] >= 0) { pinMode(ENABLEPIN[i], OUTPUT); digitalWrite(ENABLEPIN[i], LOW); }
@@ -464,6 +540,7 @@ void setup() {
     lastLoopPosition[i] = stepper[i].currentPosition();
     emergencyVStart[i] = vUsed[i];
     emergencyAStart[i] = aUsed[i];
+    changementDeDYNAMIQUE_perMotor[i] = false;
   }
   lastLoopMs = millis();
   unsigned long now = millis();
@@ -593,8 +670,10 @@ void loop() {
 
     float vUpRate = NORM_V_UP_PER_S, vDownRate = NORM_V_DOWN_PER_S, aUpRate = NORM_A_UP_PER_S, aDownRate = NORM_A_DOWN_PER_S;
 
-    // déterminer si on utilise le changement dynamique pour ce moteur (global OU override per-motor)
-    bool useDynamicThisMotor = changementDeDYNAMIQUE || changementDeDYNAMIQUE_perMotor[i];
+    // déterminer si on utilise le changement dynamique pour ce moteur:
+    // - global flag OR explicit per-motor mask OR automatic decision when DYN_MODE_AUTO chosen
+    bool useDynamicThisMotor = changementDeDYNAMIQUE || changementDeDYNAMIQUE_perMotor[i] || dynAutoEnabled[i];
+
     if (useDynamicThisMotor) {
       computeDynamicRates(i, distAbs, vUpRate, vDownRate, aUpRate, aDownRate);
     }
