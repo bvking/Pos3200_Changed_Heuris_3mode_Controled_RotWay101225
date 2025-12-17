@@ -18,7 +18,7 @@ const uint8_t DYNAMIC_CMD_INDEX = 31;
 const uint8_t AUTO_DYNAMIC_CMD_INDEX = 30;
 const long DYN_MODE_AUTO = 3;
 
-// ===================== PINS MOTEURS =====================//COUCOU
+// ===================== PINS MOTEURS =====================//COUCOULB
 // Adapter à ton câblage réel.
 const uint8_t PINDIRECTION[NBMOTEURS] = {6, 9, 12, 26, 29, 32, 34, 37, 39, 41};
 const uint8_t PINSPEED[NBMOTEURS]    = {5, 8, 11, 25, 28, 31, 33, 36, 38, 40};
@@ -106,7 +106,7 @@ struct MotionProfileParams {
 const MotionProfileParams PROFILE_SOFT = {10.0f, 1500.0f, 400.0f, 4000.0f, 200.0f, 600.0f};
 const MotionProfileParams PROFILE_MEDIUM = {10.0f, 2000.0f, 800.0f, 8000.0f, 400.0f, 900.0f};
 const MotionProfileParams PROFILE_NERVOUS = {5.0f, 2500.0f, 1200.0f, 12000.0f, 600.0f, 1200.0f};
-const MotionProfileParams PROFILE_VERY_NERVOUS = {5.0f, 3000.0f, 1600.0f, 16000.0f, 200.0f, 1200.0f}; // nouveau
+const MotionProfileParams PROFILE_VERY_NERVOUS = {1.0f, 5000.0f, 1600.0f, 10000.0f, 200.0f, 600.0f}; // nouveau
 
 uint8_t currentProfile = PROFILE_MEDIUM_IDX;
 bool changementDeDYNAMIQUE = false;
