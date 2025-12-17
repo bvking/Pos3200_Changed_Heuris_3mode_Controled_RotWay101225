@@ -18,7 +18,7 @@ const uint8_t DYNAMIC_CMD_INDEX = 31;
 const uint8_t AUTO_DYNAMIC_CMD_INDEX = 30;
 const long DYN_MODE_AUTO = 3;
 
-// ===================== PINS MOTEURS =====================
+// ===================== PINS MOTEURS =====================//COUCOU
 // Adapter à ton câblage réel.
 const uint8_t PINDIRECTION[NBMOTEURS] = {6, 9, 12, 26, 29, 32, 34, 37, 39, 41};
 const uint8_t PINSPEED[NBMOTEURS]    = {5, 8, 11, 25, 28, 31, 33, 36, 38, 40};
