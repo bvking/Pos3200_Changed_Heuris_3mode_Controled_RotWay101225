@@ -24,7 +24,7 @@ const uint8_t PINDIRECTION[NBMOTEURS] = {6, 9, 12, 26, 29, 32, 34, 37, 39, 41};
 const uint8_t PINSPEED[NBMOTEURS]    = {5, 8, 11, 25, 28, 31, 33, 36, 38, 40};
 
 // Enable par moteur (ou -1 si pas utilisé)
-const int8_t ENABLEPIN[NBMOTEURS] = {4, 7, 10, 24, 27, 30, 35, 38, 39, 42};
+const int8_t ENABLEPIN[NBMOTEURS] = {4, 7, 10, 24, 27, 30, 35, 42, 43, 44};
 
 AccelStepper stepper[NBMOTEURS] = {
   AccelStepper(STEP_DRIVER, PINSPEED[0], PINDIRECTION[0]),
