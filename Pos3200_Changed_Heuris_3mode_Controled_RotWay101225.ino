@@ -45,7 +45,7 @@ int8_t DIR_SIGN[NBMOTEURS] = {-1, -1, +1, -1, -1, -1, +1, +1, -1, -1};
 
 // ===================== PROFIL VITESSE / ACCEL =====================
 const float VMAX_HARD       = 16000.0f;
-const float ACC_HARD        = 2400.0f;
+const float ACC_HARD        = 1200.0f;
 
 const float VMIN_SOFT       = 4000.0f;
 const float ACC_MIN_SOFT    = 400.0f;
@@ -106,7 +106,7 @@ struct MotionProfileParams {
 const MotionProfileParams PROFILE_SOFT = {10.0f, 1500.0f, 400.0f, 4000.0f, 200.0f, 600.0f};
 const MotionProfileParams PROFILE_MEDIUM = {10.0f, 2000.0f, 800.0f, 8000.0f, 400.0f, 900.0f};
 const MotionProfileParams PROFILE_NERVOUS = {5.0f, 2500.0f, 1200.0f, 12000.0f, 600.0f, 1200.0f};
-const MotionProfileParams PROFILE_VERY_NERVOUS = {5.0f, 3000.0f, 1600.0f, 16000.0f, 800.0f, 2400.0f}; // nouveau
+const MotionProfileParams PROFILE_VERY_NERVOUS = {5.0f, 3000.0f, 1600.0f, 16000.0f, 200.0f, 1200.0f}; // nouveau
 
 uint8_t currentProfile = PROFILE_MEDIUM_IDX;
 bool changementDeDYNAMIQUE = false;
