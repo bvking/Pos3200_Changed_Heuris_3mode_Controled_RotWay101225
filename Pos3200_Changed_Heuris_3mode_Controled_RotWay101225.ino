@@ -104,7 +104,7 @@ struct MotionProfileParams {
 };
 
 const MotionProfileParams PROFILE_SOFT = {10.0f, 1500.0f, 400.0f, 4000.0f, 200.0f, 600.0f};
-const MotionProfileParams PROFILE_MEDIUM = {10.0f, 2000.0f, 800.0f, 8000.0f, 400.0f, 900.0f};
+const MotionProfileParams PROFILE_MEDIUM = {1.0f, 5000.0f, 1600.0f, 12000.0f, 200.0f, 1200.0f}; // géré par le logiciel par acc2
 const MotionProfileParams PROFILE_NERVOUS = {5.0f, 6000.0f, 1200.0f, 12000.0f, 200.0f, 1200.0f};
 const MotionProfileParams PROFILE_VERY_NERVOUS = {1.0f, 6000.0f, 1600.0f, 16000.0f, 200.0f, 1000.0f}; // nouveau
 
