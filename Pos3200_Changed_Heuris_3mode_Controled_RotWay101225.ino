@@ -721,12 +721,12 @@ void loop() {
   // 5) Envois périodiques
   unsigned long nowMs2 = millis();
   if (nowMs2 - lastInMs >= PRINT_INTERVAL_MS) { lastInMs = nowMs2;
-     maybeSendINSerial(); 
+    // maybeSendINSerial(); 
     }
   if (nowMs2 - lastOutMs >= PRINT_INTERVAL_MS) { lastOutMs = nowMs2;
-     maybeSendOUTSerial(); }
+   //  maybeSendOUTSerial(); }
   if (nowMs2 - lastDistMs >= PRINT_INTERVAL_MS) { lastDistMs = nowMs2;
-     maybeSendDISTSerial();
+    // maybeSendDISTSerial();
    }
 
   // mise à jour positions de référence pour la prochaine détection
