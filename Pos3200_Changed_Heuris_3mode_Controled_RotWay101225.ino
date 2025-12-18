@@ -280,13 +280,9 @@ void maybeSendINSerial()
   for (uint8_t i = 0; i < NBDATA; i++)
     lastABC[i] = ABC[i];
   lastInValid = true;
-  Serial.print('0');
-  for (uint8_t i = 0; i < NBDATA; i++)
-  {
-    Serial.print(' ');
-    Serial.print(ABC[i]);
-  }
-  Serial.println();
+  // Compact ACK: single byte '0' + newline to signal IN changed
+  Serial.write('0');
+  Serial.write('\n');
 }
 
 bool allMotorsAtTarget()
@@ -306,36 +302,18 @@ void maybeSendDISTSerial()
 {
   if (allMotorsAtTarget())
     return;
-  Serial.print('2');
-  for (uint8_t i = 0; i < NBMOTEURS; i++)
-  {
-    long distInt = stepper[i].distanceToGo();
-    long distReal = DIR_SIGN[i] * distInt;
-    Serial.print(' ');
-    Serial.print(distReal);
-  }
-  Serial.println();
+  // Compact ACK: single byte '2' indicates DIST update available
+  Serial.write('2');
+  Serial.write('\n');
 }
 
 void maybeSendOUTSerial()
 {
   if (allMotorsAtTarget())
     return;
-  Serial.print('1');
-  for (uint8_t i = 0; i < NBMOTEURS; i++)
-  {
-    long curInternal = stepper[i].currentPosition();
-    long curReal = DIR_SIGN[i] * curInternal;
-    long vNow = (long)vUsed[i];
-    long aNow = (long)aUsed[i];
-    Serial.print(' ');
-    Serial.print(curReal);
-    Serial.print(' ');
-    Serial.print(vNow);
-    Serial.print(' ');
-    Serial.print(aNow);
-  }
-  Serial.println();
+  // Compact ACK: single byte '1' indicates OUT (position/state) update available
+  Serial.write('1');
+  Serial.write('\n');
 }
 
 // ===================== PARSING TRAME & APPLICATION =====================
