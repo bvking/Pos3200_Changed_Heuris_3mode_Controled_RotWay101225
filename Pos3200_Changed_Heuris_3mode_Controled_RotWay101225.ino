@@ -724,7 +724,8 @@ void loop() {
     // maybeSendINSerial(); 
     }
   if (nowMs2 - lastOutMs >= PRINT_INTERVAL_MS) { lastOutMs = nowMs2;
-   //  maybeSendOUTSerial(); }
+   //  maybeSendOUTSerial();
+    }
   if (nowMs2 - lastDistMs >= PRINT_INTERVAL_MS) { lastDistMs = nowMs2;
     // maybeSendDISTSerial();
    }
