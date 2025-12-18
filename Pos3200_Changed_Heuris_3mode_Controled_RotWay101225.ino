@@ -186,7 +186,7 @@ bool newData = false;
 unsigned long lastInMs   = 0;
 unsigned long lastOutMs  = 0;
 unsigned long lastDistMs = 0;
-const unsigned long PRINT_INTERVAL_MS = 25;
+const unsigned long PRINT_INTERVAL_MS = 250;
 
 // ===================== RÉCEPTION RAW AVEC <...> =====================
 void recvWithStartEndMarkers() {
@@ -720,9 +720,14 @@ void loop() {
 
   // 5) Envois périodiques
   unsigned long nowMs2 = millis();
-  if (nowMs2 - lastInMs >= PRINT_INTERVAL_MS) { lastInMs = nowMs2; maybeSendINSerial(); }
-  if (nowMs2 - lastOutMs >= PRINT_INTERVAL_MS) { lastOutMs = nowMs2; maybeSendOUTSerial(); }
-  if (nowMs2 - lastDistMs >= PRINT_INTERVAL_MS) { lastDistMs = nowMs2; maybeSendDISTSerial(); }
+  if (nowMs2 - lastInMs >= PRINT_INTERVAL_MS) { lastInMs = nowMs2;
+     maybeSendINSerial(); 
+    }
+  if (nowMs2 - lastOutMs >= PRINT_INTERVAL_MS) { lastOutMs = nowMs2;
+     maybeSendOUTSerial(); }
+  if (nowMs2 - lastDistMs >= PRINT_INTERVAL_MS) { lastDistMs = nowMs2;
+     maybeSendDISTSerial();
+   }
 
   // mise à jour positions de référence pour la prochaine détection
   for (uint8_t i = 0; i < NBMOTEURS; ++i) lastLoopPosition[i] = stepper[i].currentPosition();
