@@ -18,7 +18,7 @@ const uint8_t DYNAMIC_CMD_INDEX = 31;
 const uint8_t AUTO_DYNAMIC_CMD_INDEX = 30;
 const long DYN_MODE_AUTO = 3;
 
-// ===================== PINS MOTEURS =====================//COUCOULB
+// ===================== PINS MOTEURS =====================//COUCOUL?
 // Adapter à ton câblage réel.
 const uint8_t PINDIRECTION[NBMOTEURS] = {6, 9, 12, 26, 29, 32, 34, 37, 39, 41};
 const uint8_t PINSPEED[NBMOTEURS]    = {5, 8, 11, 25, 28, 31, 33, 36, 38, 40};
@@ -45,7 +45,7 @@ int8_t DIR_SIGN[NBMOTEURS] = {-1, -1, +1, -1, -1, -1, +1, +1, -1, -1};
 
 // ===================== PROFIL VITESSE / ACCEL =====================
 const float VMAX_HARD       = 16000.0f;
-const float ACC_HARD        = 1200.0f;
+const float ACC_HARD        = 2400.0f;
 
 const float VMIN_SOFT       = 4000.0f;
 const float ACC_MIN_SOFT    = 400.0f;
@@ -103,10 +103,10 @@ struct MotionProfileParams {
   float aMax;
 };
 
-const MotionProfileParams PROFILE_SOFT = {10.0f, 1500.0f, 400.0f, 4000.0f, 200.0f, 600.0f};
-const MotionProfileParams PROFILE_MEDIUM = {1.0f, 5000.0f, 1600.0f, 12000.0f, 200.0f, 800.0f}; // géré par le logiciel par acc2
-const MotionProfileParams PROFILE_NERVOUS = {5.0f, 6000.0f, 1200.0f, 12000.0f, 200.0f, 1200.0f};
-const MotionProfileParams PROFILE_VERY_NERVOUS = {1.0f, 6000.0f, 1600.0f, 16000.0f, 200.0f, 1000.0f}; // nouveau
+const MotionProfileParams PROFILE_SOFT = {1.0f, 2500.0f, 400.0f, 8000.0f, 200.0f, 1000.0f};
+const MotionProfileParams PROFILE_MEDIUM = {1.0f, 5000.0f, 800.0f, 12000.0f, 200.0f, 1200.0f};
+const MotionProfileParams PROFILE_NERVOUS = {1.0f, 5000.0f, 1200.0f, 12000.0f, 200.0f, 1600.0f};
+const MotionProfileParams PROFILE_VERY_NERVOUS = {1.0f, 5000.0f, 1600.0f, 16000.0f, 200.0f, 2400.0f}; // nouveau
 
 uint8_t currentProfile = PROFILE_MEDIUM_IDX;
 bool changementDeDYNAMIQUE = false;
@@ -514,6 +514,7 @@ unsigned long lastLoopMs = 0;
 
 void setup() {
   Serial.begin(115200);
+  Serial.println (" begin setup ");
   applyMotionProfile(currentProfile);
 
   // charger presets par moteur depuis MotorPresetsBridge.h
@@ -720,9 +721,9 @@ void loop() {
 
   // 5) Envois périodiques
   unsigned long nowMs2 = millis();
- // if (nowMs2 - lastInMs >= PRINT_INTERVAL_MS) { lastInMs = nowMs2; maybeSendINSerial(); }
-  if (nowMs2 - lastOutMs >= PRINT_INTERVAL_MS) { lastOutMs = nowMs2; maybeSendOUTSerial(); }
- // if (nowMs2 - lastDistMs >= PRINT_INTERVAL_MS) { lastDistMs = nowMs2; maybeSendDISTSerial(); }
+  if (nowMs2 - lastInMs >= PRINT_INTERVAL_MS*23) { lastInMs = nowMs2; maybeSendINSerial(); }
+  if (nowMs2 - lastOutMs >= PRINT_INTERVAL_MS*1) { lastOutMs = nowMs2; maybeSendOUTSerial(); }
+  if (nowMs2 - lastDistMs >= PRINT_INTERVAL_MS*4) { lastDistMs = nowMs2; maybeSendDISTSerial(); }
 
   // mise à jour positions de référence pour la prochaine détection
   for (uint8_t i = 0; i < NBMOTEURS; ++i) lastLoopPosition[i] = stepper[i].currentPosition();
