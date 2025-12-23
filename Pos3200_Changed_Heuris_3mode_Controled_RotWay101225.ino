@@ -41,7 +41,7 @@ AccelStepper stepper[NBMOTEURS] = {
 
 // ===================== SIGNE PAR MOTEUR =====================
 // posMax = DIR_SIGN[i] * currentPosition()
-int8_t DIR_SIGN[NBMOTEURS] = {-1, -1, +1, -1, -1, -1, +1, +1, -1, -1};
+int8_t DIR_SIGN[NBMOTEURS] = {-1, +1, +1, -1, -1, -1, +1, +1, -1, -1};
 
 // ===================== PROFIL VITESSE / ACCEL =====================
 const float VMAX_HARD       = 16000.0f;
@@ -103,7 +103,7 @@ struct MotionProfileParams {
   float aMax;
 };
 
-const MotionProfileParams PROFILE_SOFT = {1.0f, 2500.0f, 400.0f, 8000.0f, 200.0f, 1000.0f};
+const MotionProfileParams PROFILE_SOFT = {1.0f, 2500.0f, 400.0f, 1600.0f, 200.0f, 600.0f}; // verySoft
 const MotionProfileParams PROFILE_MEDIUM = {1.0f, 5000.0f, 800.0f, 12000.0f, 200.0f, 1200.0f};
 const MotionProfileParams PROFILE_NERVOUS = {1.0f, 5000.0f, 1200.0f, 12000.0f, 200.0f, 1600.0f};
 const MotionProfileParams PROFILE_VERY_NERVOUS = {1.0f, 5000.0f, 1600.0f, 16000.0f, 200.0f, 2400.0f}; // nouveau
@@ -723,7 +723,7 @@ void loop() {
   unsigned long nowMs2 = millis();
   if (nowMs2 - lastInMs >= PRINT_INTERVAL_MS*23) { lastInMs = nowMs2; maybeSendINSerial(); }
   if (nowMs2 - lastOutMs >= PRINT_INTERVAL_MS*1) { lastOutMs = nowMs2; maybeSendOUTSerial(); }
-  if (nowMs2 - lastDistMs >= PRINT_INTERVAL_MS*4) { lastDistMs = nowMs2; maybeSendDISTSerial(); }
+  if (nowMs2 - lastDistMs >= PRINT_INTERVAL_MS*8) { lastDistMs = nowMs2; maybeSendDISTSerial(); }
 
   // mise à jour positions de référence pour la prochaine détection
   for (uint8_t i = 0; i < NBMOTEURS; ++i) lastLoopPosition[i] = stepper[i].currentPosition();
