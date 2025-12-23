@@ -534,8 +534,8 @@ void setup() {
     pinMode(PINSPEED[i], OUTPUT);
     stepper[i].setMaxSpeed(MOTOR_HEUR_V_MIN[i]);
     stepper[i].setAcceleration(MOTOR_HEUR_A_MIN[i]);
-    stepper[i].moveTo(1600);
-    stepper[i].run();
+   // stepper[i].moveTo(1600);
+   // stepper[i].run();
     vUsed[i] = MOTOR_HEUR_V_MIN[i];
     aUsed[i] = MOTOR_HEUR_A_MIN[i];
     lastDir[i] = 0;
@@ -560,8 +560,8 @@ void setup() {
   for (uint8_t i = 0; i < NBMOTEURS; ++i) {
     long cur = stepper[i].currentPosition();
     long target = cur + DIR_SIGN[i] * (long)NBPASPARTOUR;
-    targetPos[i] = target;
-    stepper[i].moveTo(target);
+    //targetPos[i] = target;
+   // stepper[i].moveTo(target);
   }
   Serial.println("<STARTUP 1TURN ALL MOTORS>");
 
