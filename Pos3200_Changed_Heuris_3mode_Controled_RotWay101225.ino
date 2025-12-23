@@ -108,7 +108,7 @@ const MotionProfileParams PROFILE_MEDIUM = {1.0f, 5000.0f, 800.0f, 12000.0f, 200
 const MotionProfileParams PROFILE_NERVOUS = {1.0f, 5000.0f, 1200.0f, 12000.0f, 200.0f, 1600.0f};
 const MotionProfileParams PROFILE_VERY_NERVOUS = {1.0f, 5000.0f, 1600.0f, 16000.0f, 200.0f, 2400.0f}; // nouveau
 
-uint8_t currentProfile = PROFILE_MEDIUM_IDX;
+uint8_t currentProfile = PROFILE_SOFT_IDX;
 bool changementDeDYNAMIQUE = false;
 // per-motor override flags for dynamic mode (false = use global flag only)
 bool changementDeDYNAMIQUE_perMotor[NBMOTEURS] = { false };
@@ -138,7 +138,7 @@ void applyMotionProfile(uint8_t profileIndex) {
     case PROFILE_MEDIUM_IDX: p = &PROFILE_MEDIUM; break;
     case PROFILE_NERVOUS_IDX: p = &PROFILE_NERVOUS; break;
     case PROFILE_VERY_NERVOUS_IDX: p = &PROFILE_VERY_NERVOUS; break;
-    default: p = &PROFILE_MEDIUM; break;
+    default: p = &PROFILE_SOFT; break;
   }
   HEUR_D_MIN = p->dMin;
   HEUR_D_MAX = p->dMax;
@@ -555,6 +555,15 @@ void setup() {
   lastOutMs  = now;
   lastDistMs = now;
   lastInValid = false;
+
+  // Startup: command each motor to perform one full revolution (NBPASPARTOUR steps)
+  for (uint8_t i = 0; i < NBMOTEURS; ++i) {
+    long cur = stepper[i].currentPosition();
+    long target = cur + DIR_SIGN[i] * (long)NBPASPARTOUR;
+    targetPos[i] = target;
+    stepper[i].moveTo(target);
+  }
+  Serial.println("<STARTUP 1TURN ALL MOTORS>");
 
   // visible startup message on serial
   Serial.println("<READY>");
