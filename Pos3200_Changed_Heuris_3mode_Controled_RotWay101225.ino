@@ -41,7 +41,8 @@ AccelStepper stepper[NBMOTEURS] = {
 
 // ===================== SIGNE PAR MOTEUR =====================
 // posMax = DIR_SIGN[i] * currentPosition()
-int8_t DIR_SIGN[NBMOTEURS] = {-1, +1, -1, -1, -1, -1, +1, +1, -1, -1};
+//int8_t DIR_SIGN[NBMOTEURS] = {-1, +1, -1, -1, -1, -1, +1, +1, -1, -1};
+int8_t DIR_SIGN[NBMOTEURS] = {+1, -1, -1, +1, +1, -1, -1, +1, -1, -1};
 
 // ===================== PROFIL VITESSE / ACCEL =====================
 const float VMAX_HARD       = 16000.0f;
@@ -66,7 +67,7 @@ const float FLIP_LIN_STRENGTH     = 0.6f;
 
 // --- Paramètres arrêt d'urgence ---
 const long EMERGENCY_STEP_THRESHOLD = 250; // 3200;    // seuil déclenchement (steps entre deux boucles)
-const float EMERGENCY_V_TARGET      = 320.0f;  // vitesse cible (steps/s)
+const float EMERGENCY_V_TARGET      = 640.0f;  // vitesse cible (steps/s) = 1/5 tour par seconde
 const float EMERGENCY_A_SCALE       = 1.0f;    // EM_A = EMERGENCY_V_TARGET * scale
 const unsigned long EMERGENCY_RAMP_MS = 3000;  // durée rampe (ms)
 
