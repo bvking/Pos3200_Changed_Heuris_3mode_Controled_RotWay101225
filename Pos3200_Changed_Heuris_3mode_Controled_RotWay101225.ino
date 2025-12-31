@@ -65,7 +65,7 @@ const float FLIP_EXP_STRENGTH     = 0.25f;
 const float FLIP_LIN_STRENGTH     = 0.6f;
 
 // --- Paramètres arrêt d'urgence ---
-const long EMERGENCY_STEP_THRESHOLD = 3200;    // seuil déclenchement (steps entre deux boucles)
+const long EMERGENCY_STEP_THRESHOLD = 250; // 3200;    // seuil déclenchement (steps entre deux boucles)
 const float EMERGENCY_V_TARGET      = 320.0f;  // vitesse cible (steps/s)
 const float EMERGENCY_A_SCALE       = 1.0f;    // EM_A = EMERGENCY_V_TARGET * scale
 const unsigned long EMERGENCY_RAMP_MS = 3000;  // durée rampe (ms)
