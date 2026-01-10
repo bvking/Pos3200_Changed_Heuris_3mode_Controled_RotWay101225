@@ -647,6 +647,15 @@ void loop() {
   // 3) Mise à jour profils / vitesses / accels
   for (uint8_t i = 0; i < NBMOTEURS; i++) {
     long curPos  = stepper[i].currentPosition();
+    
+    // Change rotation direction if current position is less than 0
+    if (curPos < 0) {
+      DIR_SIGN[i] = -DIR_SIGN[i];
+      // Adjust current position to reflect the direction change
+      stepper[i].setCurrentPosition(-curPos);
+      curPos = stepper[i].currentPosition();
+    }
+    
     long tgtPos  = targetPos[i];
     long dist    = tgtPos - curPos;
     long distAbs = (dist >= 0) ? dist : -dist;
