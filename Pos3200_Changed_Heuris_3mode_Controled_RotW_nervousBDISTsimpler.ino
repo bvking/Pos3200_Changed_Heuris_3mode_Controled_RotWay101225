@@ -8,15 +8,22 @@
 #define STEP_DRIVER  AccelStepper::DRIVER
 
 // Indexs dans ABC:
+//  - ABC[29] : follow_without_space (0 = follow normal, 1 = positions avec mêmes écarts, défaut = 1)
 //  - ABC[32] : commande d'arrêt d'urgence (0 = clear, 1 = start ramp, 2 = forced instant)
 //  - ABC[33] : profil réactivité 0=SOFT,1=MEDIUM,2=NERVOUS,3=VERY_NERVOUS
 //  - ABC[31] : dynamic command (0=none,1=force global ON,2=mask per-motor,3=auto per-motor, <0=force OFF)
-//  - ABC[30] : explicit toggle for AUTO dynamic mode (non-zero -> force AUTO)
+//  - ABC[30] : dynamique automatique par moteur (0 = OFF explicite, 1 = AUTO, défaut = 1)
 const uint8_t PROFILE_DATA_INDEX = NBDATA - 1;  // = 33
 const uint8_t EMERGENCY_CMD_INDEX = 32;
 const uint8_t DYNAMIC_CMD_INDEX = 31;
 const uint8_t AUTO_DYNAMIC_CMD_INDEX = 30;
+const uint8_t FOLLOW_WITHOUT_SPACE_CMD_INDEX = 29;
 const long DYN_MODE_AUTO = 3;
+const long AUTO_DYNAMIC_OFF = 0;
+const long AUTO_DYNAMIC_DEFAULT = 1; // dynamique automatique par moteur par defaut
+const long FOLLOW_WITHOUT_SPACE_OFF = 0;
+const long FOLLOW_WITHOUT_SPACE_EQUAL_GAPS = 1;
+const long FOLLOW_WITHOUT_SPACE_DEFAULT = FOLLOW_WITHOUT_SPACE_EQUAL_GAPS; // positions avec memes ecarts par defaut
 
 // ===================== PINS MOTEURS =====================
 // Adapter à ton câblage réel.
@@ -163,6 +170,10 @@ long  targetPos[NBMOTEURS];
 long  lastStreamTarget[NBMOTEURS];
 float lastStreamV[NBMOTEURS];
 
+// Mode follow_without_space : égalise les positions demandées entre min et max.
+bool followWithoutSpaceEnabled = false;
+long lastFollowWithoutSpaceCmd = -999999L;
+
 // --- Variables arrêt d'urgence ---
 bool emergencyActive = false;
 unsigned long emergencyStartMs = 0;
@@ -285,6 +296,17 @@ void maybeSendOUTSerial() {
 }
 
 // ===================== PARSING TRAME & APPLICATION =====================
+long computeEqualGapRawPosition(uint8_t motorIdx, long rawMin, long rawMax) {
+  if (NBMOTEURS <= 1) return rawMin;
+  long span = rawMax - rawMin;
+  if (span <= 0) return rawMin;
+
+  // Distribution régulière de rawMin à rawMax sur les 10 moteurs.
+  // L'arrondi peut créer un écart de +/- 1 pas, ce qui est normal en entier.
+  float ratio = (float)motorIdx / (float)(NBMOTEURS - 1);
+  return rawMin + (long)((float)span * ratio + 0.5f);
+}
+
 void parseData() {
     strncpy(tempChars, receivedChars, numChars);
   tempChars[numChars - 1] = '\0';
@@ -299,7 +321,25 @@ void parseData() {
     if (*endptr == ',') ptr = endptr + 1; else break;
   }
   if (parseError) { newData = false; return; }
-  for (uint8_t i = tokenIndex; i < NBDATA; ++i) ABC[i] = 0;
+  for (uint8_t i = tokenIndex; i < NBDATA; ++i) {
+    // Si Max envoie une liste courte sans ABC[29] ou ABC[30],
+    // on garde les modes par defaut : positions avec memes ecarts + dynamique auto par moteur.
+    if (i == FOLLOW_WITHOUT_SPACE_CMD_INDEX) ABC[i] = FOLLOW_WITHOUT_SPACE_DEFAULT;
+    else if (i == AUTO_DYNAMIC_CMD_INDEX) ABC[i] = AUTO_DYNAMIC_DEFAULT;
+    else ABC[i] = 0;
+  }
+
+  // FOLLOW_WITHOUT_SPACE: ABC[29]
+  // 0 = follow normal
+  // 1 = positions avec mêmes écarts : les 10 cibles sont redistribuées entre le min et le max reçus.
+  // Défaut = 1 : actif au démarrage et actif si ABC[29] est absent dans une liste courte.
+  long followWithoutSpaceCmd = ABC[FOLLOW_WITHOUT_SPACE_CMD_INDEX];
+  followWithoutSpaceEnabled = (followWithoutSpaceCmd == FOLLOW_WITHOUT_SPACE_EQUAL_GAPS);
+  if (followWithoutSpaceCmd != lastFollowWithoutSpaceCmd) {
+    lastFollowWithoutSpaceCmd = followWithoutSpaceCmd;
+    if (followWithoutSpaceEnabled) Serial.println("<FOLLOW_WITHOUT_SPACE ON positions avec memes ecarts>");
+    else Serial.println("<FOLLOW_WITHOUT_SPACE OFF follow normal>");
+  }
 
   // PROFILE: ABC[33] modulates reactivity: 0=SOFT,1=MEDIUM,2=NERVOUS,3=VERY_NERVOUS
   long profRaw = ABC[PROFILE_DATA_INDEX];
@@ -313,7 +353,8 @@ void parseData() {
   // activer/désactiver mode changementDeDYNAMIQUE (séparé des profiles)
   long dynRaw = ABC[DYNAMIC_CMD_INDEX];
 
-  // permettre à l'entrée ABC[30] d'activer le mode AUTO dynamiquement (contrôle explicite)
+  // ABC[30] active par defaut la dynamique automatique par moteur.
+  // Pour la desactiver explicitement depuis Max : envoyer ABC[30] = 0 et ABC[31] = 0.
   if (AUTO_DYNAMIC_CMD_INDEX < NBDATA && ABC[AUTO_DYNAMIC_CMD_INDEX] != 0) {
     dynRaw = DYN_MODE_AUTO;
   }
@@ -323,6 +364,7 @@ void parseData() {
   //  1 = global ON
   //  2 = per-motor mask in ABC[10..19] (non-zero -> enable per motor)
   //  3 = AUTO per-motor (heuristic based on recent requested distances)
+  //  ABC[30] = 1 force aussi AUTO per-motor, et c'est le defaut au demarrage
   // <0 or other = global OFF
   if (dynRaw == 1) {
     changementDeDYNAMIQUE = true;
@@ -360,8 +402,24 @@ void parseData() {
   }
 
   // update target positions (ABC[0..9]) and maintain history for auto dynamic detection
+  long rawMin = ABC[0];
+  long rawMax = ABC[0];
+  if (followWithoutSpaceEnabled) {
+    for (uint8_t i = 1; i < NBMOTEURS; i++) {
+      if (ABC[i] < rawMin) rawMin = ABC[i];
+      if (ABC[i] > rawMax) rawMax = ABC[i];
+    }
+  }
+
   for (uint8_t i = 0; i < NBMOTEURS; i++) {
-    long rawPos    = ABC[i];
+    long rawPos = ABC[i];
+
+    if (followWithoutSpaceEnabled) {
+      // Mode follow_without_space : on ignore les espacements irréguliers reçus
+      // et on reconstruit 10 positions quasi équidistantes entre rawMin et rawMax.
+      rawPos = computeEqualGapRawPosition(i, rawMin, rawMax);
+    }
+
     long signedPos = DIR_SIGN[i] * rawPos;
     long d = signedPos - lastStreamTarget[i];
     // lastStreamTarget used also to compute lastStreamV
@@ -518,6 +576,17 @@ void setup() {
   Serial.println (" stBdist ");
   applyMotionProfile(currentProfile);
 
+  // follow_without_space par defaut : positions avec memes ecarts
+  ABC[FOLLOW_WITHOUT_SPACE_CMD_INDEX] = FOLLOW_WITHOUT_SPACE_DEFAULT;
+  followWithoutSpaceEnabled = (ABC[FOLLOW_WITHOUT_SPACE_CMD_INDEX] == FOLLOW_WITHOUT_SPACE_EQUAL_GAPS);
+  lastFollowWithoutSpaceCmd = ABC[FOLLOW_WITHOUT_SPACE_CMD_INDEX];
+  if (followWithoutSpaceEnabled) Serial.println("<FOLLOW_WITHOUT_SPACE DEFAULT ON positions avec memes ecarts>");
+
+  // dynamique automatique par moteur par defaut
+  ABC[AUTO_DYNAMIC_CMD_INDEX] = AUTO_DYNAMIC_DEFAULT;
+  changementDeDYNAMIQUE = false;
+  Serial.println("<AUTO_DYNAMIC DEFAULT ON per-motor>");
+
   // charger presets par moteur depuis MotorPresetsBridge.h
   loadPerMotorPresetsFromLibrary();
 
@@ -525,7 +594,7 @@ void setup() {
   for (uint8_t i = 0; i < NBMOTEURS; ++i) {
     for (uint8_t k = 0; k < DYN_HISTORY_WINDOW; ++k) distHistory[i][k] = 0;
     distHistIdx[i] = 0;
-    dynAutoEnabled[i] = false;
+    dynAutoEnabled[i] = true; // mode auto actif par defaut ; sera recalcule a chaque trame
   }
 
   for (uint8_t i = 0; i < NBMOTEURS; i++) {
