@@ -8,7 +8,7 @@
 #define STEP_DRIVER  AccelStepper::DRIVER
 
 // Indexs dans ABC:
-//  - ABC[29] : follow_without_space (0 = follow normal, 1 = positions avec mêmes écarts, défaut = 1)
+//  - ABC[29] : follow_space / follow_without_space (0 = follow normal, 1 = positions souhaitées remplacées par des positions à écarts égaux, défaut = 1)
 //  - ABC[32] : commande d'arrêt d'urgence (0 = clear, 1 = start ramp, 2 = forced instant)
 //  - ABC[33] : profil réactivité 0=SOFT,1=MEDIUM,2=NERVOUS,3=VERY_NERVOUS
 //  - ABC[31] : dynamic command (0=none,1=force global ON,2=mask per-motor,3=auto per-motor, <0=force OFF)
@@ -167,6 +167,10 @@ bool  inFlip[NBMOTEURS];
 unsigned long flipStartMs[NBMOTEURS];
 
 long  targetPos[NBMOTEURS];
+// Positions souhaitées réellement utilisées par le mode follow_space.
+// En follow normal : desiredRawPos[i] = ABC[i].
+// En follow_space : desiredRawPos[0..9] est remplacé par une série à écarts égaux.
+long  desiredRawPos[NBMOTEURS];
 long  lastStreamTarget[NBMOTEURS];
 float lastStreamV[NBMOTEURS];
 
@@ -307,6 +311,29 @@ long computeEqualGapRawPosition(uint8_t motorIdx, long rawMin, long rawMax) {
   return rawMin + (long)((float)span * ratio + 0.5f);
 }
 
+void buildDesiredRawPositions() {
+  // Par défaut, les positions souhaitées sont les positions reçues depuis Max.
+  for (uint8_t i = 0; i < NBMOTEURS; i++) {
+    desiredRawPos[i] = ABC[i];
+  }
+
+  if (!followWithoutSpaceEnabled) return;
+
+  // Mode follow_space / follow_without_space :
+  // on remplace les positions souhaitées irrégulières par 10 positions
+  // régulièrement espacées entre la plus petite et la plus grande position reçue.
+  long rawMin = ABC[0];
+  long rawMax = ABC[0];
+  for (uint8_t i = 1; i < NBMOTEURS; i++) {
+    if (ABC[i] < rawMin) rawMin = ABC[i];
+    if (ABC[i] > rawMax) rawMax = ABC[i];
+  }
+
+  for (uint8_t i = 0; i < NBMOTEURS; i++) {
+    desiredRawPos[i] = computeEqualGapRawPosition(i, rawMin, rawMax);
+  }
+}
+
 void parseData() {
     strncpy(tempChars, receivedChars, numChars);
   tempChars[numChars - 1] = '\0';
@@ -401,25 +428,12 @@ void parseData() {
     }
   }
 
-  // update target positions (ABC[0..9]) and maintain history for auto dynamic detection
-  long rawMin = ABC[0];
-  long rawMax = ABC[0];
-  if (followWithoutSpaceEnabled) {
-    for (uint8_t i = 1; i < NBMOTEURS; i++) {
-      if (ABC[i] < rawMin) rawMin = ABC[i];
-      if (ABC[i] > rawMax) rawMax = ABC[i];
-    }
-  }
+  // update target positions and maintain history for auto dynamic detection
+  // Le mode follow_space modifie ici les positions souhaitées avant le calcul moteur.
+  buildDesiredRawPositions();
 
   for (uint8_t i = 0; i < NBMOTEURS; i++) {
-    long rawPos = ABC[i];
-
-    if (followWithoutSpaceEnabled) {
-      // Mode follow_without_space : on ignore les espacements irréguliers reçus
-      // et on reconstruit 10 positions quasi équidistantes entre rawMin et rawMax.
-      rawPos = computeEqualGapRawPosition(i, rawMin, rawMax);
-    }
-
+    long rawPos = desiredRawPos[i];
     long signedPos = DIR_SIGN[i] * rawPos;
     long d = signedPos - lastStreamTarget[i];
     // lastStreamTarget used also to compute lastStreamV
@@ -592,6 +606,7 @@ void setup() {
 
   // init history arrays
   for (uint8_t i = 0; i < NBMOTEURS; ++i) {
+    desiredRawPos[i] = 0;
     for (uint8_t k = 0; k < DYN_HISTORY_WINDOW; ++k) distHistory[i][k] = 0;
     distHistIdx[i] = 0;
     dynAutoEnabled[i] = true; // mode auto actif par defaut ; sera recalcule a chaque trame
