@@ -1,0 +1,767 @@
+#include <AccelStepper.h>
+#include "MotorPresetsBridge.h"
+
+// ===================== CONFIG GÉNÉRALE =====================
+#define NBMOTEURS    10
+#define NBDATA       34
+#define NBPASPARTOUR 3200
+#define STEP_DRIVER  AccelStepper::DRIVER
+
+// Indexs dans ABC:
+//  - ABC[29] : follow_space / follow_without_space (0 = follow normal, 1 = positions souhaitées remplacées par des positions à écarts égaux, défaut = 1)
+//  - ABC[30] : dynamique automatique simplifiée par moteur (0 = OFF, 1 = ON, défaut = 1)
+//  - ABC[31] : réservé / inutilisé pour l'instant
+//  - ABC[32] : commande d'arrêt d'urgence (0 = clear, 1 = start ramp, 2 = forced instant)
+//  - ABC[33] : profil réactivité 0=SOFT,1=MEDIUM,2=NERVOUS,3=VERY_NERVOUS, défaut = 1
+const uint8_t PROFILE_DATA_INDEX = NBDATA - 1;  // = 33
+const uint8_t EMERGENCY_CMD_INDEX = 32;
+const uint8_t RESERVED_CMD_INDEX = 31;
+const uint8_t AUTO_DYNAMIC_CMD_INDEX = 30;
+const uint8_t FOLLOW_WITHOUT_SPACE_CMD_INDEX = 29;
+const long AUTO_DYNAMIC_OFF = 0;
+const long AUTO_DYNAMIC_DEFAULT = 1; // dynamique automatique par moteur par defaut
+const long PROFILE_DEFAULT = 1; // réactivité MEDIUM par défaut réel
+const long FOLLOW_WITHOUT_SPACE_OFF = 0;
+const long FOLLOW_WITHOUT_SPACE_EQUAL_GAPS = 1;
+const long FOLLOW_WITHOUT_SPACE_DEFAULT = FOLLOW_WITHOUT_SPACE_EQUAL_GAPS; // positions avec memes ecarts par defaut
+
+// ===================== PINS MOTEURS =====================
+// Adapter à ton câblage réel.
+const uint8_t PINDIRECTION[NBMOTEURS] = {6, 9, 12, 26, 29, 32, 34, 37, 39, 41};
+const uint8_t PINSPEED[NBMOTEURS]    = {5, 8, 11, 25, 28, 31, 33, 36, 38, 40};
+
+// Enable par moteur (ou -1 si pas utilisé).   BEWARE WITH THE SAME PIN betwen ENABPIN ANDE ABOVE
+// const int8_t ENABLEPIN[NBMOTEURS] = {4, 7, 10, 24, 27, 30, 35, 38, 39, 42};
+const int8_t ENABLEPIN[NBMOTEURS] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1,};
+
+AccelStepper stepper[NBMOTEURS] = {
+  AccelStepper(STEP_DRIVER, PINSPEED[0], PINDIRECTION[0]),
+  AccelStepper(STEP_DRIVER, PINSPEED[1], PINDIRECTION[1]),
+  AccelStepper(STEP_DRIVER, PINSPEED[2], PINDIRECTION[2]),
+  AccelStepper(STEP_DRIVER, PINSPEED[3], PINDIRECTION[3]),
+  AccelStepper(STEP_DRIVER, PINSPEED[4], PINDIRECTION[4]),
+  AccelStepper(STEP_DRIVER, PINSPEED[5], PINDIRECTION[5]),
+  AccelStepper(STEP_DRIVER, PINSPEED[6], PINDIRECTION[6]),
+  AccelStepper(STEP_DRIVER, PINSPEED[7], PINDIRECTION[7]),
+  AccelStepper(STEP_DRIVER, PINSPEED[8], PINDIRECTION[8]),
+  AccelStepper(STEP_DRIVER, PINSPEED[9], PINDIRECTION[9])
+};
+
+// ===================== SIGNE PAR MOTEUR =====================
+// posMax = DIR_SIGN[i] * currentPosition()
+int8_t DIR_SIGN[NBMOTEURS] = {-1, -1, +1, -1, -1, -1, +1, +1, -1, -1};
+
+// ===================== PROFIL VITESSE / ACCEL =====================
+const float VMAX_HARD       = 16000.0f;
+const float ACC_HARD        = 1200.0f;
+
+const float VMIN_SOFT       = 4000.0f;
+const float ACC_MIN_SOFT    = 400.0f;
+
+const float VMIN_USEFUL     = 2000.0f;
+const float ACC_MIN_USEFUL  = 400.0f;
+
+const float NORM_V_UP_PER_S   = 6000.0f;
+const float NORM_V_DOWN_PER_S = 6000.0f;
+const float NORM_A_UP_PER_S   = 8000.0f;
+const float NORM_A_DOWN_PER_S = 8000.0f;
+
+const unsigned long FLIP_TOTAL_MS = 400;
+const unsigned long FLIP_EXP_MS   = 200;
+const unsigned long FLIP_LIN_MS   = 200;
+const float FLIP_EXP_STRENGTH     = 0.25f;
+const float FLIP_LIN_STRENGTH     = 0.6f;
+
+// --- Paramètres arrêt d'urgence ---
+const long EMERGENCY_STEP_THRESHOLD = 3200;    // seuil déclenchement (steps entre deux boucles)
+const float EMERGENCY_V_TARGET      = 320.0f;  // vitesse cible (steps/s)
+const float EMERGENCY_A_SCALE       = 1.0f;    // EM_A = EMERGENCY_V_TARGET * scale
+const unsigned long EMERGENCY_RAMP_MS = 3000;  // durée rampe (ms)
+
+// ✨ Paramètres heuristiques DIST→V/A (changés via presets)
+float HEUR_D_MIN;   // distance min
+float HEUR_D_MAX;   // distance max
+
+float HEUR_V_MIN;   // vitesse min
+float HEUR_V_MAX;   // vitesse max
+
+float HEUR_A_MIN;   // accel min
+float HEUR_A_MAX;   // accel max
+
+// --- Per-motor presets (initialized from profile defaults, can be tuned per motor)
+float MOTOR_HEUR_D_MIN[NBMOTEURS];
+float MOTOR_HEUR_D_MAX[NBMOTEURS];
+float MOTOR_HEUR_V_MIN[NBMOTEURS];
+float MOTOR_HEUR_V_MAX[NBMOTEURS];
+float MOTOR_HEUR_A_MIN[NBMOTEURS];
+float MOTOR_HEUR_A_MAX[NBMOTEURS];
+
+// ✨ Index symboliques de profils
+const uint8_t PROFILE_SOFT_IDX    = 0;
+const uint8_t PROFILE_MEDIUM_IDX  = 1;
+const uint8_t PROFILE_NERVOUS_IDX = 2;
+const uint8_t PROFILE_VERY_NERVOUS_IDX = 3; // nouveau profil
+
+struct MotionProfileParams {
+  float dMin;
+  float dMax;
+  float vMin;
+  float vMax;
+  float aMin;
+  float aMax;
+};
+
+const MotionProfileParams PROFILE_SOFT = {10.0f, 1500.0f, 400.0f, 4000.0f, 200.0f, 600.0f};
+const MotionProfileParams PROFILE_MEDIUM = {10.0f, 2000.0f, 800.0f, 8000.0f, 400.0f, 900.0f};
+const MotionProfileParams PROFILE_NERVOUS = {5.0f, 2500.0f, 1200.0f, 12000.0f, 600.0f, 1200.0f};
+const MotionProfileParams PROFILE_VERY_NERVOUS = {5.0f, 3000.0f, 1600.0f, 16000.0f, 200.0f, 1200.0f}; // nouveau
+
+uint8_t currentProfile = PROFILE_MEDIUM_IDX;
+
+// Dynamique simplifiée : un seul mode automatique, activé/désactivé par ABC[30].
+bool autoDynamicEnabled = true;
+long lastAutoDynamicCmd = -999999L;
+
+// Historique des changements de consigne pour calculer un facteur dynamique continu par moteur.
+const uint8_t DYN_HISTORY_WINDOW = 8;
+long distHistory[NBMOTEURS][DYN_HISTORY_WINDOW];
+uint8_t distHistIdx[NBMOTEURS];
+
+// apply per-motor arrays from HEUR_* defaults
+void applyPerMotorPresetsFromProfile() {
+  for (uint8_t i = 0; i < NBMOTEURS; ++i) {
+    MOTOR_HEUR_D_MIN[i] = HEUR_D_MIN;
+    MOTOR_HEUR_D_MAX[i] = HEUR_D_MAX;
+    MOTOR_HEUR_V_MIN[i] = HEUR_V_MIN;
+    MOTOR_HEUR_V_MAX[i] = HEUR_V_MAX;
+    MOTOR_HEUR_A_MIN[i] = HEUR_A_MIN;
+    MOTOR_HEUR_A_MAX[i] = HEUR_A_MAX;
+  }
+}
+
+void applyMotionProfile(uint8_t profileIndex) {
+  const MotionProfileParams* p;
+  switch (profileIndex) {
+    case PROFILE_SOFT_IDX: p = &PROFILE_SOFT; break;
+    case PROFILE_MEDIUM_IDX: p = &PROFILE_MEDIUM; break;
+    case PROFILE_NERVOUS_IDX: p = &PROFILE_NERVOUS; break;
+    case PROFILE_VERY_NERVOUS_IDX: p = &PROFILE_VERY_NERVOUS; break;
+    default: p = &PROFILE_MEDIUM; break;
+  }
+  HEUR_D_MIN = p->dMin;
+  HEUR_D_MAX = p->dMax;
+  HEUR_V_MIN = p->vMin;
+  HEUR_V_MAX = p->vMax;
+  HEUR_A_MIN = p->aMin;
+  HEUR_A_MAX = p->aMax;
+
+  // update per-motor presets
+  applyPerMotorPresetsFromProfile();
+}
+
+// ===================== ETAT MOTEURS / HEURISTIQUES =====================
+float vUsed[NBMOTEURS];
+float aUsed[NBMOTEURS];
+int   lastDir[NBMOTEURS];
+bool  inFlip[NBMOTEURS];
+unsigned long flipStartMs[NBMOTEURS];
+
+long  targetPos[NBMOTEURS];
+// Positions souhaitées réellement utilisées par le mode follow_space.
+// En follow normal : desiredRawPos[i] = ABC[i].
+// En follow_space : desiredRawPos[0..9] est remplacé par une série à écarts égaux.
+long  desiredRawPos[NBMOTEURS];
+long  lastStreamTarget[NBMOTEURS];
+float lastStreamV[NBMOTEURS];
+
+// Mode follow_without_space : égalise les positions demandées entre min et max.
+bool followWithoutSpaceEnabled = false;
+long lastFollowWithoutSpaceCmd = -999999L;
+
+// --- Variables arrêt d'urgence ---
+bool emergencyActive = false;
+unsigned long emergencyStartMs = 0;
+float emergencyVStart[NBMOTEURS];
+float emergencyAStart[NBMOTEURS];
+long  lastLoopPosition[NBMOTEURS];
+
+// ===================== DONNÉES REÇUES DE MAX =====================
+long ABC[NBDATA] = {0};
+
+// Pour savoir si les IN ont changé (pour n’envoyer que si modif)
+long lastABC[NBDATA];
+bool lastInValid = false;
+
+// ===================== RÉCEPTION TRAME <...> SUR Serial (USB) =====================
+const byte numChars = 200;
+char receivedChars[numChars];
+char tempChars[numChars];
+bool newData = false;
+
+// ===================== TIMERS AFFICHAGE =====================
+unsigned long lastInMs   = 0;
+unsigned long lastOutMs  = 0;
+unsigned long lastDistMs = 0;
+const unsigned long PRINT_INTERVAL_MS = 25;
+
+// ===================== RÉCEPTION RAW AVEC <...> =====================
+void recvWithStartEndMarkers() {
+  static bool recvInProgress = false;
+  static byte ndx = 0;
+  static unsigned long frameStartMs = 0;
+  const char startMarker = '<';
+  const char endMarker   = '>';
+  const unsigned long FRAME_TIMEOUT_MS = 25;
+
+  while (Serial.available() > 0 && newData == false) {
+    char rc = (char)Serial.read();
+    if (rc == '\r' || rc == '\n') continue;
+    if (!recvInProgress) {
+      if (rc == startMarker) {
+        recvInProgress = true;
+        ndx = 0;
+        frameStartMs = millis();
+      }
+    } else {
+      if (millis() - frameStartMs > FRAME_TIMEOUT_MS) {
+        recvInProgress = false;
+        ndx = 0;
+        continue;
+      }
+      if (rc == endMarker) {
+        if (ndx >= numChars) ndx = numChars - 1;
+        receivedChars[ndx] = '\0';
+        recvInProgress = false;
+        ndx = 0;
+        newData = true;
+        break;
+      } else {
+        if (ndx < numChars - 1) {
+          receivedChars[ndx++] = rc;
+        } else {
+          recvInProgress = false;
+          ndx = 0;
+        }
+      }
+    }
+  }
+}
+
+// ===================== ENVOIS SERIE =====================
+void maybeSendINSerial() {
+  bool changed = false;
+  if (!lastInValid) changed = true;
+  else {
+    for (uint8_t i = 0; i < NBDATA; i++) if (ABC[i] != lastABC[i]) { changed = true; break; }
+  }
+  if (!changed) return;
+  for (uint8_t i = 0; i < NBDATA; i++) lastABC[i] = ABC[i];
+  lastInValid = true;
+  Serial.print('0');
+  for (uint8_t i = 0; i < NBDATA; i++) { Serial.print(' '); Serial.print(ABC[i]); }
+  Serial.println();
+}
+
+bool allMotorsAtTarget() {
+  for (uint8_t i = 0; i < NBMOTEURS; i++) {
+    long d = stepper[i].distanceToGo(); if (d < 0) d = -d;
+    if (d >= 1) return false;
+  }
+  return true;
+}
+
+void maybeSendDISTSerial() {
+  if (allMotorsAtTarget()) return;
+  Serial.print('2');
+  for (uint8_t i = 0; i < NBMOTEURS; i++) {
+    long distInt  = stepper[i].distanceToGo();
+    long distReal = DIR_SIGN[i] * distInt;
+    Serial.print(' '); Serial.print(distReal);
+  }
+  Serial.println();
+}
+
+void maybeSendOUTSerial() {
+  if (allMotorsAtTarget()) return;
+  Serial.print('1');
+  for (uint8_t i = 0; i < NBMOTEURS; i++) {
+    long curInternal = stepper[i].currentPosition();
+    long curReal     = DIR_SIGN[i] * curInternal;
+    long vNow        = (long)vUsed[i];
+    long aNow        = (long)aUsed[i];
+    Serial.print(' ');
+    Serial.print(curReal);
+    Serial.print(' ');
+    Serial.print(vNow);
+    Serial.print(' ');
+    Serial.print(aNow);
+  }
+  Serial.println();
+}
+
+// ===================== PARSING TRAME & APPLICATION =====================
+long computeEqualGapRawPosition(uint8_t motorIdx, long rawMin, long rawMax) {
+  if (NBMOTEURS <= 1) return rawMin;
+  long span = rawMax - rawMin;
+  if (span <= 0) return rawMin;
+
+  // Distribution régulière de rawMin à rawMax sur les 10 moteurs.
+  // L'arrondi peut créer un écart de +/- 1 pas, ce qui est normal en entier.
+  float ratio = (float)motorIdx / (float)(NBMOTEURS - 1);
+  return rawMin + (long)((float)span * ratio + 0.5f);
+}
+
+void buildDesiredRawPositions() {
+  // Par défaut, les positions souhaitées sont les positions reçues depuis Max.
+  for (uint8_t i = 0; i < NBMOTEURS; i++) {
+    desiredRawPos[i] = ABC[i];
+  }
+
+  if (!followWithoutSpaceEnabled) return;
+
+  // Mode follow_space / follow_without_space :
+  // on remplace les positions souhaitées irrégulières par 10 positions
+  // régulièrement espacées entre la plus petite et la plus grande position reçue.
+  long rawMin = ABC[0];
+  long rawMax = ABC[0];
+  for (uint8_t i = 1; i < NBMOTEURS; i++) {
+    if (ABC[i] < rawMin) rawMin = ABC[i];
+    if (ABC[i] > rawMax) rawMax = ABC[i];
+  }
+
+  for (uint8_t i = 0; i < NBMOTEURS; i++) {
+    desiredRawPos[i] = computeEqualGapRawPosition(i, rawMin, rawMax);
+  }
+}
+
+void parseData() {
+    strncpy(tempChars, receivedChars, numChars);
+  tempChars[numChars - 1] = '\0';
+  char *ptr = tempChars;
+  char *endptr;
+  uint8_t tokenIndex = 0;
+  bool parseError = false;
+  while (tokenIndex < NBDATA && *ptr != '\0') {
+    long val = strtol(ptr, &endptr, 10);
+    if (endptr == ptr) { parseError = true; break; }
+    ABC[tokenIndex++] = val;
+    if (*endptr == ',') ptr = endptr + 1; else break;
+  }
+  if (parseError) { newData = false; return; }
+  for (uint8_t i = tokenIndex; i < NBDATA; ++i) {
+    // Si Max envoie une liste courte, on garde les défauts utiles :
+    // ABC[29]=1 follow_space, ABC[30]=1 dynamique auto, ABC[33]=1 MEDIUM.
+    if (i == FOLLOW_WITHOUT_SPACE_CMD_INDEX) ABC[i] = FOLLOW_WITHOUT_SPACE_DEFAULT;
+    else if (i == AUTO_DYNAMIC_CMD_INDEX) ABC[i] = AUTO_DYNAMIC_DEFAULT;
+    else if (i == PROFILE_DATA_INDEX) ABC[i] = PROFILE_DEFAULT;
+    else ABC[i] = 0;
+  }
+
+  // FOLLOW_WITHOUT_SPACE: ABC[29]
+  // 0 = follow normal
+  // 1 = positions avec mêmes écarts : les 10 cibles sont redistribuées entre le min et le max reçus.
+  // Défaut = 1 : actif au démarrage et actif si ABC[29] est absent dans une liste courte.
+  long followWithoutSpaceCmd = ABC[FOLLOW_WITHOUT_SPACE_CMD_INDEX];
+  followWithoutSpaceEnabled = (followWithoutSpaceCmd == FOLLOW_WITHOUT_SPACE_EQUAL_GAPS);
+  if (followWithoutSpaceCmd != lastFollowWithoutSpaceCmd) {
+    lastFollowWithoutSpaceCmd = followWithoutSpaceCmd;
+    if (followWithoutSpaceEnabled) Serial.println("<FOLLOW_WITHOUT_SPACE ON positions avec memes ecarts>");
+    else Serial.println("<FOLLOW_WITHOUT_SPACE OFF follow normal>");
+  }
+
+  // PROFILE: ABC[33] modulates reactivity: 0=SOFT,1=MEDIUM,2=NERVOUS,3=VERY_NERVOUS
+  long profRaw = ABC[PROFILE_DATA_INDEX];
+  uint8_t requestedProfile;
+  if (profRaw <= 0) requestedProfile = PROFILE_SOFT_IDX;
+  else if (profRaw == 1) requestedProfile = PROFILE_MEDIUM_IDX;
+  else if (profRaw == 2) requestedProfile = PROFILE_NERVOUS_IDX;
+  else if (profRaw == 3) requestedProfile = PROFILE_VERY_NERVOUS_IDX;
+  else requestedProfile = currentProfile;
+
+  // DYNAMIQUE SIMPLIFIÉE : ABC[30]
+  // 0 = dynamique automatique OFF
+  // 1 = dynamique automatique ON, par moteur, avec facteur continu
+  // ABC[31] est réservé et n'agit plus sur la dynamique.
+  long autoDynamicCmd = ABC[AUTO_DYNAMIC_CMD_INDEX];
+  autoDynamicEnabled = (autoDynamicCmd != AUTO_DYNAMIC_OFF);
+  if (autoDynamicCmd != lastAutoDynamicCmd) {
+    lastAutoDynamicCmd = autoDynamicCmd;
+    if (autoDynamicEnabled) Serial.println("<AUTO_DYNAMIC ON simplified per-motor factor>");
+    else Serial.println("<AUTO_DYNAMIC OFF>");
+  }
+
+  if (requestedProfile != currentProfile) {
+    currentProfile = requestedProfile;
+    applyMotionProfile(currentProfile);
+    for (uint8_t i = 0; i < NBMOTEURS; i++) {
+      if (vUsed[i] < MOTOR_HEUR_V_MIN[i]) vUsed[i] = MOTOR_HEUR_V_MIN[i];
+      if (aUsed[i] < MOTOR_HEUR_A_MIN[i]) aUsed[i] = MOTOR_HEUR_A_MIN[i];
+    }
+  }
+
+  // update target positions and maintain history for auto dynamic detection
+  // Le mode follow_space modifie ici les positions souhaitées avant le calcul moteur.
+  buildDesiredRawPositions();
+
+  for (uint8_t i = 0; i < NBMOTEURS; i++) {
+    long rawPos = desiredRawPos[i];
+    long signedPos = DIR_SIGN[i] * rawPos;
+    long d = signedPos - lastStreamTarget[i];
+    // lastStreamTarget used also to compute lastStreamV
+    lastStreamTarget[i] = signedPos;
+    lastStreamV[i] = (float)abs(d) / 0.025f;
+    targetPos[i] = signedPos;
+    stepper[i].moveTo(signedPos);
+
+    // update history of requested deltas (magnitude of new request)
+    long mag = (d >= 0) ? d : -d;
+    distHistory[i][distHistIdx[i]] = mag;
+    distHistIdx[i] = (distHistIdx[i] + 1) % DYN_HISTORY_WINDOW;
+  }
+
+  // Pas de bascule ON/OFF par moteur ici : la dynamique simplifiée utilise un
+  // facteur continu calculé dans la loop() à partir de cet historique.
+
+  newData = false;
+}
+
+// ===================== HELPERS PROFIL =====================
+float approachTimed(float currentVal, float targetVal, float upRatePerS, float downRatePerS, float dtMs) {
+  float upStep   = upRatePerS   * (dtMs / 1000.0f);
+  float downStep = downRatePerS * (dtMs / 1000.0f);
+  float diff     = targetVal - currentVal;
+  if (diff > 0) { if (diff > upStep) diff = upStep; }
+  else if (diff < 0) { if (diff < -downStep) diff = -downStep; }
+  return currentVal + diff;
+}
+
+void getFlipRates(unsigned long flipAgeMs, float &vUp, float &vDown, float &aUp, float &aDown) {
+  vUp   = NORM_V_UP_PER_S; vDown = NORM_V_DOWN_PER_S; aUp = NORM_A_UP_PER_S; aDown = NORM_A_DOWN_PER_S;
+  if (flipAgeMs >= FLIP_TOTAL_MS) return;
+  if (flipAgeMs < FLIP_EXP_MS) {
+    float t = (float)flipAgeMs / (float)FLIP_EXP_MS;
+    float k = 1.0f - t;
+    float factor = FLIP_EXP_STRENGTH + (1.0f - FLIP_EXP_STRENGTH) * (k * k);
+    vUp *= factor; vDown *= factor; aUp *= factor; aDown *= factor;
+  } else {
+    unsigned long linAge = flipAgeMs - FLIP_EXP_MS;
+    float t = (float)linAge / (float)FLIP_LIN_MS; if (t > 1.0f) t = 1.0f;
+    float factor = FLIP_LIN_STRENGTH + (1.0f - FLIP_LIN_STRENGTH) * t;
+    vUp *= factor; vDown *= factor; aUp *= factor; aDown *= factor;
+  }
+}
+
+// Dynamique simplifiée : calculer un facteur continu par moteur.
+// Le facteur module seulement les rampes de transition vers vTarget/aTarget.
+// Il ne change pas la position cible.
+// Valeurs typiques :
+//  - 0.55 : transitions plus douces
+//  - 1.00 : transitions normales
+//  - 1.50 : transitions plus réactives
+float computeAutoDynamicFactor(uint8_t motorIdx, long distAbs) {
+  long sum = 0;
+  for (uint8_t k = 0; k < DYN_HISTORY_WINDOW; ++k) {
+    sum += distHistory[motorIdx][k];
+  }
+  float mean = (float)sum / (float)DYN_HISTORY_WINDOW;
+
+  float sqsum = 0.0f;
+  for (uint8_t k = 0; k < DYN_HISTORY_WINDOW; ++k) {
+    float diff = (float)distHistory[motorIdx][k] - mean;
+    sqsum += diff * diff;
+  }
+  float stddev = sqrt(sqsum / (float)DYN_HISTORY_WINDOW);
+  float score = 0.6f * mean + 0.4f * stddev;
+
+  // Normalisation du score d'irrégularité / amplitude.
+  // 0    -> consignes stables ou petites
+  // 3000 -> consignes très grandes ou très irrégulières
+  float scoreNorm = score / 3000.0f;
+  if (scoreNorm < 0.0f) scoreNorm = 0.0f;
+  if (scoreNorm > 1.0f) scoreNorm = 1.0f;
+
+  // Normalisation de la distance restante.
+  float dmin = MOTOR_HEUR_D_MIN[motorIdx];
+  float dmax = MOTOR_HEUR_D_MAX[motorIdx];
+  float nd = 0.0f;
+  float span = dmax - dmin;
+  if (span > 0.001f) nd = ((float)distAbs - dmin) / span;
+  if (nd < 0.0f) nd = 0.0f;
+  if (nd > 1.0f) nd = 1.0f;
+
+  // Mélange : l'historique compte plus que la distance instantanée.
+  float activity = 0.65f * scoreNorm + 0.35f * nd;
+  float curve = activity * activity * (3.0f - 2.0f * activity); // smoothstep
+
+  float factor = 0.55f + 0.95f * curve;
+  if (factor < 0.55f) factor = 0.55f;
+  if (factor > 1.50f) factor = 1.50f;
+  return factor;
+}
+
+float computeSpeedFromDistance(uint8_t motorIdx, long distAbs) {
+  float dmin = MOTOR_HEUR_D_MIN[motorIdx];
+  float dmax = MOTOR_HEUR_D_MAX[motorIdx];
+  float vmin = MOTOR_HEUR_V_MIN[motorIdx];
+  float vmax = MOTOR_HEUR_V_MAX[motorIdx];
+
+  float d = (float)distAbs;
+  if (d < dmin) d = dmin;
+  if (d > dmax) d = dmax;
+  float x = (d - dmin) / (dmax - dmin);
+  float f = x * x * (3.0f - 2.0f * x);
+  float v = vmin + f * (vmax - vmin);
+  if (v > VMAX_HARD) v = VMAX_HARD;
+  if (v < vmin) v = vmin;
+  return v;
+}
+
+float computeAccelFromDistance(uint8_t motorIdx, long distAbs) {
+  float dmin = MOTOR_HEUR_D_MIN[motorIdx];
+  float dmax = MOTOR_HEUR_D_MAX[motorIdx];
+  float amin = MOTOR_HEUR_A_MIN[motorIdx];
+  float amax = MOTOR_HEUR_A_MAX[motorIdx];
+
+  float d = (float)distAbs;
+  if (d < dmin) d = dmin;
+  if (d > dmax) d = dmax;
+  float x = (d - dmin) / (dmax - dmin);
+  float f = x * x * (3.0f - 2.0f * x);
+  float a = amin + f * (amax - amin);
+  if (a > ACC_HARD) a = ACC_HARD;
+  if (a < amin) a = amin;
+  return a;
+}
+
+// ===================== SETUP =====================
+unsigned long lastLoopMs = 0;
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println (" stBdist ");
+  applyMotionProfile(currentProfile);
+
+  // follow_without_space par defaut : positions avec memes ecarts
+  ABC[FOLLOW_WITHOUT_SPACE_CMD_INDEX] = FOLLOW_WITHOUT_SPACE_DEFAULT;
+  followWithoutSpaceEnabled = (ABC[FOLLOW_WITHOUT_SPACE_CMD_INDEX] == FOLLOW_WITHOUT_SPACE_EQUAL_GAPS);
+  lastFollowWithoutSpaceCmd = ABC[FOLLOW_WITHOUT_SPACE_CMD_INDEX];
+  if (followWithoutSpaceEnabled) Serial.println("<FOLLOW_WITHOUT_SPACE DEFAULT ON positions avec memes ecarts>");
+
+  // dynamique automatique simplifiée par moteur par defaut
+  ABC[AUTO_DYNAMIC_CMD_INDEX] = AUTO_DYNAMIC_DEFAULT;
+  autoDynamicEnabled = (ABC[AUTO_DYNAMIC_CMD_INDEX] != AUTO_DYNAMIC_OFF);
+  lastAutoDynamicCmd = ABC[AUTO_DYNAMIC_CMD_INDEX];
+  Serial.println("<AUTO_DYNAMIC DEFAULT ON simplified per-motor factor>");
+
+  // réactivité MEDIUM par défaut réel, même si Max envoie ensuite une liste courte.
+  ABC[PROFILE_DATA_INDEX] = PROFILE_DEFAULT;
+
+  // charger presets par moteur depuis MotorPresetsBridge.h
+  loadPerMotorPresetsFromLibrary();
+
+  // init history arrays
+  for (uint8_t i = 0; i < NBMOTEURS; ++i) {
+    desiredRawPos[i] = 0;
+    for (uint8_t k = 0; k < DYN_HISTORY_WINDOW; ++k) distHistory[i][k] = 0;
+    distHistIdx[i] = 0;
+  }
+
+  for (uint8_t i = 0; i < NBMOTEURS; i++) {
+    stepper[i].setMinPulseWidth(5);
+    if (ENABLEPIN[i] >= 0) { pinMode(ENABLEPIN[i], OUTPUT); digitalWrite(ENABLEPIN[i], LOW); }
+    pinMode(PINDIRECTION[i], OUTPUT);
+    pinMode(PINSPEED[i], OUTPUT);
+    stepper[i].setMaxSpeed(MOTOR_HEUR_V_MIN[i]);
+    stepper[i].setAcceleration(MOTOR_HEUR_A_MIN[i]);
+    stepper[i].moveTo(1600);
+    stepper[i].run();
+    vUsed[i] = MOTOR_HEUR_V_MIN[i];
+    aUsed[i] = MOTOR_HEUR_A_MIN[i];
+    lastDir[i] = 0;
+    inFlip[i]  = false;
+    flipStartMs[i] = 0;
+    targetPos[i]   = 0;
+    lastStreamTarget[i] = 0;
+    lastStreamV[i]      = 0;
+    lastLoopPosition[i] = stepper[i].currentPosition();
+    emergencyVStart[i] = vUsed[i];
+    emergencyAStart[i] = aUsed[i];
+  }
+  lastLoopMs = millis();
+  unsigned long now = millis();
+  lastInMs   = now;
+  lastOutMs  = now;
+  lastDistMs = now;
+  lastInValid = false;
+
+  // visible startup message on serial
+  Serial.println("<READY>");
+}
+
+// démarrer l'arrêt d'urgence (appelé une fois lors du déclenchement)
+void startEmergencyStop(unsigned long nowMs) {
+  if (emergencyActive) return;
+  emergencyActive = true;
+  emergencyStartMs = nowMs;
+  for (uint8_t i = 0; i < NBMOTEURS; ++i) {
+    emergencyVStart[i] = vUsed[i];
+    emergencyAStart[i] = aUsed[i];
+  }
+  // signal visible sur port série
+  Serial.print("<EMERGENCY START ");
+  Serial.print(nowMs);
+  Serial.println(">");
+}
+
+// clear / annuler l'arrêt d'urgence (commande via ABC[32] == 0)
+void clearEmergencyStop(unsigned long nowMs) {
+  if (!emergencyActive) return;
+  emergencyActive = false;
+  Serial.print("<EMERGENCY CLEARED ");
+  Serial.print(nowMs);
+  Serial.println(">");
+}
+
+// Lire commande d'urgence venant de ABC[32]
+// valeurs conventionnelles:
+//  0 = annuler l'arrêt d'urgence (clear)
+//  1 = démarrer la rampe d'arrêt d'urgence (start ramp)
+//  2 = forcer l'arrêt d'urgence (rampe instantanée -> target atteint immédiatement)
+void checkEmergencyCommandFromABC(unsigned long nowMs) {
+  long cmd = ABC[EMERGENCY_CMD_INDEX];
+  if (cmd == 1) {
+    startEmergencyStop(nowMs);
+  } else if (cmd == 2) {
+    startEmergencyStop(nowMs);
+    // forcer la rampe complète d'urgence
+    emergencyStartMs = nowMs - EMERGENCY_RAMP_MS;
+    Serial.print("<EMERGENCY FORCED ");
+    Serial.print(nowMs);
+    Serial.println(">");
+  } else if (cmd == 0) {
+    if (emergencyActive) clearEmergencyStop(nowMs);
+  }
+}
+
+// ===================== LOOP =====================
+void loop() {
+  // 1) Réception depuis Max
+  recvWithStartEndMarkers();
+  if (newData) {
+    parseData();
+    unsigned long nowAfterParse = millis();
+    // contrôle de l'arrêt d'urgence via ABC[32]
+    checkEmergencyCommandFromABC(nowAfterParse);
+  }
+
+  // 2) dt
+  unsigned long nowMs = millis();
+  float dtMs = (float)(nowMs - lastLoopMs);
+  if (dtMs < 0) dtMs = 0;
+  if (dtMs > 50) dtMs = 50;
+  lastLoopMs = nowMs;
+
+  // --- Détection arrêt d'urgence : si déplacement suspect entre deux boucles ---
+  for (uint8_t i = 0; i < NBMOTEURS; ++i) {
+    long curPos = stepper[i].currentPosition();
+    long d = curPos - lastLoopPosition[i];
+    if (d < 0) d = -d;
+    if (!emergencyActive && d > EMERGENCY_STEP_THRESHOLD) {
+      startEmergencyStop(nowMs);
+      break;
+    }
+  }
+
+  // 3) Mise à jour profils / vitesses / accels
+  for (uint8_t i = 0; i < NBMOTEURS; i++) {
+    long curPos  = stepper[i].currentPosition();
+    long tgtPos  = targetPos[i];
+    long dist    = tgtPos - curPos;
+    long distAbs = (dist >= 0) ? dist : -dist;
+    int dirNow = (dist > 0) ? +1 : (dist < 0) ? -1 : 0;
+
+    if (emergencyActive) {
+      unsigned long elapsed = nowMs - emergencyStartMs;
+      float t = (elapsed >= EMERGENCY_RAMP_MS) ? 1.0f : (float)elapsed / (float)EMERGENCY_RAMP_MS;
+      float emergencyA_target = EMERGENCY_V_TARGET * EMERGENCY_A_SCALE;
+      if (emergencyA_target < 50.0f) emergencyA_target = 50.0f;
+      if (emergencyA_target > ACC_HARD) emergencyA_target = ACC_HARD;
+      vUsed[i] = emergencyVStart[i] + (EMERGENCY_V_TARGET - emergencyVStart[i]) * t;
+      aUsed[i] = emergencyAStart[i] + (emergencyA_target - emergencyAStart[i]) * t;
+      if (vUsed[i] > VMAX_HARD) vUsed[i] = VMAX_HARD;
+      if (vUsed[i] < EMERGENCY_V_TARGET) vUsed[i] = EMERGENCY_V_TARGET;
+      if (aUsed[i] > ACC_HARD) aUsed[i] = ACC_HARD;
+      if (aUsed[i] < 10.0f) aUsed[i] = 10.0f;
+      stepper[i].setMaxSpeed(vUsed[i]);
+      stepper[i].setAcceleration(aUsed[i]);
+      stepper[i].moveTo(tgtPos);
+      continue;
+    }
+
+    // normal behaviour
+    float vTarget = computeSpeedFromDistance(i, distAbs);
+    float aTarget = computeAccelFromDistance(i, distAbs);
+    float vStream = lastStreamV[i];
+    if (vStream > vTarget) {
+      vTarget = vStream;
+      if (aTarget < ACC_MIN_SOFT) aTarget = ACC_MIN_SOFT;
+    }
+
+    if (dirNow != 0 && lastDir[i] != 0 && dirNow != lastDir[i]) {
+      inFlip[i] = true;
+      flipStartMs[i] = nowMs;
+    }
+    lastDir[i] = dirNow;
+
+    float vUpRate = NORM_V_UP_PER_S, vDownRate = NORM_V_DOWN_PER_S, aUpRate = NORM_A_UP_PER_S, aDownRate = NORM_A_DOWN_PER_S;
+
+    // Dynamique simplifiée : si ABC[30] est actif, chaque moteur calcule
+    // un facteur continu selon son historique de consignes et sa distance restante.
+    float dynamicFactor = 1.0f;
+    if (autoDynamicEnabled) {
+      dynamicFactor = computeAutoDynamicFactor(i, distAbs);
+      vUpRate   *= dynamicFactor;
+      vDownRate *= dynamicFactor;
+      aUpRate   *= dynamicFactor;
+      aDownRate *= dynamicFactor;
+    }
+
+    if (inFlip[i]) {
+      unsigned long flipAge = nowMs - flipStartMs[i];
+      if (flipAge >= FLIP_TOTAL_MS) inFlip[i] = false;
+      else {
+        float f_vUp, f_vDown, f_aUp, f_aDown;
+        getFlipRates(flipAge, f_vUp, f_vDown, f_aUp, f_aDown);
+        vUpRate   = vUpRate   * (f_vUp   / NORM_V_UP_PER_S);
+        vDownRate = vDownRate * (f_vDown / NORM_V_DOWN_PER_S);
+        aUpRate   = aUpRate   * (f_aUp   / NORM_A_UP_PER_S);
+        aDownRate = aDownRate * (f_aDown / NORM_A_DOWN_PER_S);
+        if (vTarget < VMIN_USEFUL) vTarget = VMIN_USEFUL;
+        if (aTarget < ACC_MIN_USEFUL) aTarget = ACC_MIN_USEFUL;
+      }
+    }
+
+    vUsed[i] = approachTimed(vUsed[i], vTarget, vUpRate, vDownRate, dtMs);
+    aUsed[i] = approachTimed(aUsed[i], aTarget, aUpRate, aDownRate, dtMs);
+    if (vUsed[i] > VMAX_HARD) vUsed[i] = VMAX_HARD;
+    if (vUsed[i] < MOTOR_HEUR_V_MIN[i]) vUsed[i] = MOTOR_HEUR_V_MIN[i];
+    if (aUsed[i] > ACC_HARD) aUsed[i] = ACC_HARD;
+    if (aUsed[i] < MOTOR_HEUR_A_MIN[i]) aUsed[i] = MOTOR_HEUR_A_MIN[i];
+
+    stepper[i].setMaxSpeed(vUsed[i]);
+    stepper[i].setAcceleration(aUsed[i]);
+    stepper[i].moveTo(tgtPos);
+  }
+
+  // 4) Intégration
+  for (uint8_t i = 0; i < NBMOTEURS; i++) stepper[i].run();
+
+  // 5) Envois périodiques
+  unsigned long nowMs2 = millis();
+  if (nowMs2 - lastInMs >= PRINT_INTERVAL_MS) { lastInMs = nowMs2; maybeSendINSerial(); }
+  if (nowMs2 - lastOutMs >= PRINT_INTERVAL_MS) { lastOutMs = nowMs2; maybeSendOUTSerial(); }
+  if (nowMs2 - lastDistMs >= PRINT_INTERVAL_MS) { lastDistMs = nowMs2; maybeSendDISTSerial(); }
+
+  // mise à jour positions de référence pour la prochaine détection
+  for (uint8_t i = 0; i < NBMOTEURS; ++i) lastLoopPosition[i] = stepper[i].currentPosition();
+}
