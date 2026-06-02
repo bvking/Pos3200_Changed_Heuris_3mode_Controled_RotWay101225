@@ -9,11 +9,13 @@
 
 // Indexs dans ABC:
 //  - ABC[32] : commande d'arrêt d'urgence (0 = clear, 1 = start ramp, 2 = forced instant)
-//  - ABC[33] : profil réactivité 0=SOFT,1=MEDIUM,2=NERVOUS
-//  - ABC[31] : dynamic command (0=fallback to profile,1=force global ON,2=mask per-motor,3=auto per-motor, <0=force OFF)
+//  - ABC[33] : profil réactivité 0=SOFT,1=MEDIUM,2=NERVOUS,3=VERY_NERVOUS
+//  - ABC[31] : dynamic command (0=none,1=force global ON,2=mask per-motor,3=auto per-motor, <0=force OFF)
+//  - ABC[30] : explicit toggle for AUTO dynamic mode (non-zero -> force AUTO)
 const uint8_t PROFILE_DATA_INDEX = NBDATA - 1;  // = 33
 const uint8_t EMERGENCY_CMD_INDEX = 32;
 const uint8_t DYNAMIC_CMD_INDEX = 31;
+const uint8_t AUTO_DYNAMIC_CMD_INDEX = 30;
 const long DYN_MODE_AUTO = 3;
 
 // ===================== PINS MOTEURS =====================
@@ -21,8 +23,9 @@ const long DYN_MODE_AUTO = 3;
 const uint8_t PINDIRECTION[NBMOTEURS] = {6, 9, 12, 26, 29, 32, 34, 37, 39, 41};
 const uint8_t PINSPEED[NBMOTEURS]    = {5, 8, 11, 25, 28, 31, 33, 36, 38, 40};
 
-// Enable par moteur (ou -1 si pas utilisé)
-const int8_t ENABLEPIN[NBMOTEURS] = {4, 7, 10, 24, 27, 30, 35, 38, 39, 42};
+// Enable par moteur (ou -1 si pas utilisé).   BEWARE WITH THE SAME PIN betwen ENABPIN ANDE ABOVE
+// const int8_t ENABLEPIN[NBMOTEURS] = {4, 7, 10, 24, 27, 30, 35, 38, 39, 42};
+const int8_t ENABLEPIN[NBMOTEURS] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1,};
 
 AccelStepper stepper[NBMOTEURS] = {
   AccelStepper(STEP_DRIVER, PINSPEED[0], PINDIRECTION[0]),
@@ -42,7 +45,7 @@ AccelStepper stepper[NBMOTEURS] = {
 int8_t DIR_SIGN[NBMOTEURS] = {-1, -1, +1, -1, -1, -1, +1, +1, -1, -1};
 
 // ===================== PROFIL VITESSE / ACCEL =====================
-const float VMAX_HARD       = 12800.0f;
+const float VMAX_HARD       = 16000.0f;
 const float ACC_HARD        = 1200.0f;
 
 const float VMIN_SOFT       = 4000.0f;
@@ -90,7 +93,7 @@ float MOTOR_HEUR_A_MAX[NBMOTEURS];
 const uint8_t PROFILE_SOFT_IDX    = 0;
 const uint8_t PROFILE_MEDIUM_IDX  = 1;
 const uint8_t PROFILE_NERVOUS_IDX = 2;
-const uint8_t PROFILE_DYNAMIC_IDX = 3;
+const uint8_t PROFILE_VERY_NERVOUS_IDX = 3; // nouveau profil
 
 struct MotionProfileParams {
   float dMin;
@@ -104,6 +107,7 @@ struct MotionProfileParams {
 const MotionProfileParams PROFILE_SOFT = {10.0f, 1500.0f, 400.0f, 4000.0f, 200.0f, 600.0f};
 const MotionProfileParams PROFILE_MEDIUM = {10.0f, 2000.0f, 800.0f, 8000.0f, 400.0f, 900.0f};
 const MotionProfileParams PROFILE_NERVOUS = {5.0f, 2500.0f, 1200.0f, 12000.0f, 600.0f, 1200.0f};
+const MotionProfileParams PROFILE_VERY_NERVOUS = {5.0f, 3000.0f, 1600.0f, 16000.0f, 200.0f, 1200.0f}; // nouveau
 
 uint8_t currentProfile = PROFILE_MEDIUM_IDX;
 bool changementDeDYNAMIQUE = false;
@@ -132,8 +136,9 @@ void applyMotionProfile(uint8_t profileIndex) {
   const MotionProfileParams* p;
   switch (profileIndex) {
     case PROFILE_SOFT_IDX: p = &PROFILE_SOFT; break;
+    case PROFILE_MEDIUM_IDX: p = &PROFILE_MEDIUM; break;
     case PROFILE_NERVOUS_IDX: p = &PROFILE_NERVOUS; break;
-    case PROFILE_MEDIUM_IDX:
+    case PROFILE_VERY_NERVOUS_IDX: p = &PROFILE_VERY_NERVOUS; break;
     default: p = &PROFILE_MEDIUM; break;
   }
   HEUR_D_MIN = p->dMin;
@@ -191,7 +196,7 @@ void recvWithStartEndMarkers() {
   static unsigned long frameStartMs = 0;
   const char startMarker = '<';
   const char endMarker   = '>';
-  const unsigned long FRAME_TIMEOUT_MS = 50;
+  const unsigned long FRAME_TIMEOUT_MS = 25;
 
   while (Serial.available() > 0 && newData == false) {
     char rc = (char)Serial.read();
@@ -281,7 +286,7 @@ void maybeSendOUTSerial() {
 
 // ===================== PARSING TRAME & APPLICATION =====================
 void parseData() {
-  strncpy(tempChars, receivedChars, numChars);
+    strncpy(tempChars, receivedChars, numChars);
   tempChars[numChars - 1] = '\0';
   char *ptr = tempChars;
   char *endptr;
@@ -296,18 +301,25 @@ void parseData() {
   if (parseError) { newData = false; return; }
   for (uint8_t i = tokenIndex; i < NBDATA; ++i) ABC[i] = 0;
 
-  // PROFILE: ABC[33] modulates reactivity: 0=SOFT,1=MEDIUM,2=NERVOUS
+  // PROFILE: ABC[33] modulates reactivity: 0=SOFT,1=MEDIUM,2=NERVOUS,3=VERY_NERVOUS
   long profRaw = ABC[PROFILE_DATA_INDEX];
   uint8_t requestedProfile;
   if (profRaw <= 0) requestedProfile = PROFILE_SOFT_IDX;
   else if (profRaw == 1) requestedProfile = PROFILE_MEDIUM_IDX;
   else if (profRaw == 2) requestedProfile = PROFILE_NERVOUS_IDX;
+  else if (profRaw == 3) requestedProfile = PROFILE_VERY_NERVOUS_IDX;
   else requestedProfile = currentProfile;
 
-  // activer/désactiver mode changementDeDYNAMIQUE
+  // activer/désactiver mode changementDeDYNAMIQUE (séparé des profiles)
   long dynRaw = ABC[DYNAMIC_CMD_INDEX];
+
+  // permettre à l'entrée ABC[30] d'activer le mode AUTO dynamiquement (contrôle explicite)
+  if (AUTO_DYNAMIC_CMD_INDEX < NBDATA && ABC[AUTO_DYNAMIC_CMD_INDEX] != 0) {
+    dynRaw = DYN_MODE_AUTO;
+  }
+
   // dynRaw semantics:
-  //  0 = fallback to profile (PROFILE_DYNAMIC_IDX)
+  //  0 = none (do not toggle dynamic here)
   //  1 = global ON
   //  2 = per-motor mask in ABC[10..19] (non-zero -> enable per motor)
   //  3 = AUTO per-motor (heuristic based on recent requested distances)
@@ -329,13 +341,8 @@ void parseData() {
   } else if (dynRaw == DYN_MODE_AUTO) {
     changementDeDYNAMIQUE = false; // global off, per-motor auto will decide
     // auto decision will be computed below when we have per-motor deltas
-  } else if (dynRaw == 0) {
-    changementDeDYNAMIQUE = (profRaw == PROFILE_DYNAMIC_IDX);
-    for (uint8_t m = 0; m < NBMOTEURS; ++m) {
-      changementDeDYNAMIQUE_perMotor[m] = false;
-      dynAutoEnabled[m] = false;
-    }
   } else {
+    // default: no dynamic change requested
     changementDeDYNAMIQUE = false;
     for (uint8_t m = 0; m < NBMOTEURS; ++m) {
       changementDeDYNAMIQUE_perMotor[m] = false;
@@ -508,6 +515,7 @@ unsigned long lastLoopMs = 0;
 
 void setup() {
   Serial.begin(115200);
+  Serial.println (" stBdist ");
   applyMotionProfile(currentProfile);
 
   // charger presets par moteur depuis MotorPresetsBridge.h
